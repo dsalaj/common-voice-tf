@@ -1,20 +1,16 @@
 import tensorflow as tf
-import numpy as np
-import pathlib
 import os
-import io
 from pydub import AudioSegment
 import matplotlib.pyplot as plt
 from scipy.io import wavfile
 from tempfile import mktemp
-
 
 tf.compat.v1.enable_eager_execution()
 
 DATASET_ROOT = '/calc/SHARED/MozillaCommonVoice'
 lang_labels = [name for name in os.listdir(DATASET_ROOT) if os.path.isdir(os.path.join(DATASET_ROOT, name))]
 print(lang_labels)
-lang_labels = lang_labels[:2]  # FIXME
+lang_labels = lang_labels[:2]  # FIXME temp
 
 # Count audio clips per label
 label_n_clips = {l: 0 for l in lang_labels}
@@ -25,6 +21,16 @@ for label in lang_labels:
     label_n_clips[label] += num_clips
     n_clips += num_clips
 print(label_n_clips)
+FS = None
+
+
+def decode_mp3(mp3_path):
+    mp3_path = mp3_path.numpy().decode("utf-8")
+    mp3_audio = AudioSegment.from_file(mp3_path, format="mp3")
+    wname = mktemp('.wav')
+    mp3_audio.export(wname, format="wav")
+    FS, data = wavfile.read(wname)
+    return data
 
 
 def process_path(file_path):
@@ -33,7 +39,9 @@ def process_path(file_path):
     label = tf.strings.split(file_path, '/')[-3]
     label_idx = tf.argmax(tf.cast(tf.equal(lang_labels, label), tf.int32))
     # file = tf.io.read_file(file_path)
-    file = file_path
+    # file = file_path
+    file = tf.py_function(func=decode_mp3, inp=[file_path], Tout=tf.int32)
+    file = file[:4000]  # FIXME: implement random offseting and normalization
     return file, label_idx
 
 
@@ -58,17 +66,12 @@ for features, labels in balanced_ds.take(10):
     # print(labels.numpy())
     for l in labels.numpy():
         count[l] += 1
-    mp3_path = features.numpy()[0]
-    mp3_audio = AudioSegment.from_file(mp3_path.decode("utf-8"), format="mp3")
-    assert mp3_audio.channels == 1
-    print("duration", mp3_audio.duration_seconds)
-    wname = mktemp('.wav')
-    mp3_audio.export(wname, format="wav")
-    FS, data = wavfile.read(wname)
+    data = features.numpy()[0]
     # plt.specgram(data, Fs=FS, NFFT=128, noverlap=0)
     # plt.plot(data)
     # plt.show()
 print("AFTER balancing", count)
+
 
 
 
