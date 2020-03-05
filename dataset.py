@@ -1,9 +1,11 @@
 import tensorflow as tf
 import os
 from pydub import AudioSegment
+import librosa as lr
 import matplotlib.pyplot as plt
 from scipy.io import wavfile
 from tempfile import mktemp
+import numpy as np
 
 tf.compat.v1.enable_eager_execution()
 
@@ -21,16 +23,23 @@ for label in lang_labels:
     label_n_clips[label] += num_clips
     n_clips += num_clips
 print(label_n_clips)
-FS = None
+FS = 48000
 
 
 def decode_mp3(mp3_path):
     mp3_path = mp3_path.numpy().decode("utf-8")
-    mp3_audio = AudioSegment.from_file(mp3_path, format="mp3")
-    wname = mktemp('.wav')
-    mp3_audio.export(wname, format="wav")
-    FS, data = wavfile.read(wname)
-    return data
+
+    data, sr = lr.load(mp3_path, sr=None, mono=True, dtype=np.float32)
+
+    # mp3_audio = AudioSegment.from_file(mp3_path)
+    # mp3_audio.set_frame_rate(FS)
+    # sr = mp3_audio.frame_rate
+    # data = mp3_audio.get_array_of_samples()
+    # print(type(data))
+
+    assert_op = tf.Assert(tf.equal(tf.reduce_max(sr), FS), [sr])
+    with tf.control_dependencies([assert_op]):
+        return data
 
 
 def process_path(file_path):
@@ -40,8 +49,10 @@ def process_path(file_path):
     label_idx = tf.argmax(tf.cast(tf.equal(lang_labels, label), tf.int32))
     # file = tf.io.read_file(file_path)
     # file = file_path
-    file = tf.py_function(func=decode_mp3, inp=[file_path], Tout=tf.int32)
-    file = file[:4000]  # FIXME: implement random offseting and normalization
+    file = tf.py_function(func=decode_mp3, inp=[file_path], Tout=tf.float32)
+    offset = FS // 2  # start at half a second
+    file = file[offset:offset+FS//2]  # normalize length to one second
+    # FIXME: implement random offsetting and normalization
     return file, label_idx
 
 
@@ -61,15 +72,18 @@ balanced_ds = resampled_ds.repeat().batch(100)
 
 
 count = {k: 0 for k in range(len(lang_labels))}
-for features, labels in balanced_ds.take(10):
+for features, labels in balanced_ds.take(3):
     # print(features.numpy())
     # print(labels.numpy())
     for l in labels.numpy():
         count[l] += 1
     data = features.numpy()[0]
+    print(data.shape, data.dtype)
     # plt.specgram(data, Fs=FS, NFFT=128, noverlap=0)
-    # plt.plot(data)
-    # plt.show()
+    # time = np.arange(0, len(data)) / FS
+    # plt.plot(time, data)
+    plt.plot(data)
+    plt.show()
 print("AFTER balancing", count)
 
 
