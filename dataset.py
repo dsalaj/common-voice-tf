@@ -15,7 +15,7 @@ class CommonVoiceDataset:
         self.ds_root = '/calc/SHARED/MozillaCommonVoice'
         self.lang_labels = [name for name in os.listdir(self.ds_root) if os.path.isdir(os.path.join(self.ds_root, name))]
         # print(self.lang_labels)
-        self.lang_labels = self.lang_labels[:2]  # FIXME temp
+        self.lang_labels = self.lang_labels[:5]  # FIXME temp
 
         # Count audio clips per label
         label_n_clips = {l: 0 for l in self.lang_labels}
@@ -40,7 +40,8 @@ class CommonVoiceDataset:
         resampled_ds = tf.data.experimental.sample_from_datasets(list_ds)
 
         # FIXME: should the repeat be applied at this point or before the uniform sampling?
-        balanced_ds = resampled_ds.repeat().batch(100)
+        # balanced_ds = resampled_ds.repeat().batch(100)
+        balanced_ds = resampled_ds
         self.dataset = balanced_ds
 
     def decode_and_process(self, mp3_path):
@@ -85,15 +86,15 @@ class CommonVoiceDataset:
 
         def periodic_hann_window(window_length, dtype):
             return 0.5 - 0.5 * tf.math.cos(
-                2.0 * np.pi * tf.range(tf.to_float(window_length), dtype=dtype) / tf.to_float(window_length))
+                2.0 * np.pi * tf.range(tf.compat.v1.to_float(window_length), dtype=dtype) / tf.compat.v1.to_float(window_length))
 
-        signal_stft = tf.contrib.signal.stft(data,
+        signal_stft = tf.signal.stft(data,
                                              frame_length=frame_length,
                                              frame_step=frame_step,
                                              fft_length=fft_length,
                                              window_fn=periodic_hann_window)
         signal_spectrograms = tf.abs(signal_stft)
-        num_spectrogram_bins = signal_stft.shape[-1].value
+        num_spectrogram_bins = signal_stft.shape[-1]
 
         linear_to_mel_weight_matrix = tf.signal.linear_to_mel_weight_matrix(num_mel_bins, num_spectrogram_bins,
                                                                             sample_rate,
@@ -103,14 +104,16 @@ class CommonVoiceDataset:
 
         log_mel_spectrograms = tf.math.log(mel_spectrograms + log_noise_floor)
         signal_mfccs = tf.signal.mfccs_from_log_mel_spectrograms(log_mel_spectrograms)[..., :num_mfccs]
-        signal_mfccs = np.log(signal_mfccs)
+
+        # data = signal_spectrograms
+        data = signal_mfccs
 
 
 
 
         assert_op = tf.Assert(tf.equal(tf.reduce_max(sr), self.FS), [sr])
         with tf.control_dependencies([assert_op]):
-            return signal_mfccs
+            return data
 
     def process_path(self, file_path):
         # Example file_path: /calc/SHARED/MozillaCommonVoice/ru/clips/common_voice_ru_18903106.mp3
@@ -119,6 +122,7 @@ class CommonVoiceDataset:
         label_idx = tf.argmax(tf.cast(tf.equal(self.lang_labels, label), tf.int32))
 
         audio = tf.py_function(func=self.decode_and_process, inp=[file_path], Tout=tf.float32)
+        audio.set_shape((149, 26))
         return audio, label_idx
 
 
@@ -144,7 +148,7 @@ if __name__ == "__main__":
     cvds = CommonVoiceDataset(decoding=decoding)
 
     count = {k: 0 for k in range(len(cvds.lang_labels))}
-    for features, labels in cvds.dataset.take(3):
+    for features, labels in cvds.dataset.batch(10).take(1):
         for l in labels.numpy():
             count[l] += 1
         label = labels.numpy()[0]
@@ -155,6 +159,7 @@ if __name__ == "__main__":
         # plt.specgram(data, Fs=cvds.FS, NFFT=128, noverlap=0)
         # time = np.arange(0, len(data)) / cvds.FS
         # plt.plot(time, data)
-        plt.show()
+        # plt.show()
+        plt.savefig('test_normLen_{}_{}_{}.png'.format(decoding, cvds.lang_labels[label], count[label]))
     print("count of sequences per label", count)
 
