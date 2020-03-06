@@ -69,10 +69,11 @@ class CommonVoiceDataset:
         else:
             raise ValueError("Unknown decoding type: " + self.decoding)
 
-        # The normalization of AudioSegment output is tuned to match approximately the normalization of librosa
-        # print(np.std(data))
-        # print(np.max(data))
-        # print(np.min(data))
+        # Normalize clip length for clips shorter than 1s
+        if data.shape[0] < self.FS:
+            data = np.concatenate((data, data[:self.FS-data.shape[0]]), axis=0)
+        elif data.shape[0] > self.FS:
+            data = data[:self.FS]
 
         assert_op = tf.Assert(tf.equal(tf.reduce_max(sr), self.FS), [sr])
         with tf.control_dependencies([assert_op]):
@@ -83,12 +84,9 @@ class CommonVoiceDataset:
         # Label is the dir name of two parents up ('ru' for the example above)
         label = tf.strings.split(file_path, '/')[-3]
         label_idx = tf.argmax(tf.cast(tf.equal(self.lang_labels, label), tf.int32))
-        # file = tf.io.read_file(file_path)
-        # file = file_path
-        file = tf.py_function(func=self.decode_and_process, inp=[file_path], Tout=tf.float32)
-        file = file[:self.FS]  # normalize length to one second
-        # FIXME: implement random offsetting and length normalization
-        return file, label_idx
+
+        audio = tf.py_function(func=self.decode_and_process, inp=[file_path], Tout=tf.float32)
+        return audio, label_idx
 
 
 def profile_different_decoding():
@@ -118,7 +116,7 @@ if __name__ == "__main__":
             count[l] += 1
         label = labels.numpy()[0]
         data = features.numpy()[0]
-        lr.output.write_wav('test_{}_{}_{}.wav'.format(decoding, cvds.lang_labels[label], count[label]), data, cvds.FS)
+        lr.output.write_wav('test_normLen_{}_{}_{}.wav'.format(decoding, cvds.lang_labels[label], count[label]), data, cvds.FS)
         # print(data.shape, data.dtype)
         # plt.specgram(data, Fs=cvds.FS, NFFT=128, noverlap=0)
         # time = np.arange(0, len(data)) / cvds.FS
