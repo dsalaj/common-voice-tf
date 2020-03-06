@@ -75,9 +75,42 @@ class CommonVoiceDataset:
         elif data.shape[0] > self.FS:
             data = data[:self.FS]
 
+        # PREPROCESSING RAW SIGNAL TO MFCCs
+        frame_length = 512
+        frame_step = 320
+        fft_length = 512
+        num_mfccs = 26
+        sample_rate, lower_edge_hertz, upper_edge_hertz, num_mel_bins = 16000.0, 20.0, 4000.0, 40
+        log_noise_floor = 1e-12
+
+        def periodic_hann_window(window_length, dtype):
+            return 0.5 - 0.5 * tf.math.cos(
+                2.0 * np.pi * tf.range(tf.to_float(window_length), dtype=dtype) / tf.to_float(window_length))
+
+        signal_stft = tf.contrib.signal.stft(data,
+                                             frame_length=frame_length,
+                                             frame_step=frame_step,
+                                             fft_length=fft_length,
+                                             window_fn=periodic_hann_window)
+        signal_spectrograms = tf.abs(signal_stft)
+        num_spectrogram_bins = signal_stft.shape[-1].value
+
+        linear_to_mel_weight_matrix = tf.signal.linear_to_mel_weight_matrix(num_mel_bins, num_spectrogram_bins,
+                                                                            sample_rate,
+                                                                            lower_edge_hertz, upper_edge_hertz)
+        mel_spectrograms = tf.tensordot(signal_spectrograms, linear_to_mel_weight_matrix, 1)
+        mel_spectrograms.set_shape(mel_spectrograms.shape[:-1].concatenate(linear_to_mel_weight_matrix.shape[-1:]))
+
+        log_mel_spectrograms = tf.math.log(mel_spectrograms + log_noise_floor)
+        signal_mfccs = tf.signal.mfccs_from_log_mel_spectrograms(log_mel_spectrograms)[..., :num_mfccs]
+        signal_mfccs = np.log(signal_mfccs)
+
+
+
+
         assert_op = tf.Assert(tf.equal(tf.reduce_max(sr), self.FS), [sr])
         with tf.control_dependencies([assert_op]):
-            return data
+            return signal_mfccs
 
     def process_path(self, file_path):
         # Example file_path: /calc/SHARED/MozillaCommonVoice/ru/clips/common_voice_ru_18903106.mp3
@@ -116,11 +149,12 @@ if __name__ == "__main__":
             count[l] += 1
         label = labels.numpy()[0]
         data = features.numpy()[0]
-        lr.output.write_wav('test_normLen_{}_{}_{}.wav'.format(decoding, cvds.lang_labels[label], count[label]), data, cvds.FS)
+        # lr.output.write_wav('test_normLen_{}_{}_{}.wav'.format(decoding, cvds.lang_labels[label], count[label]), data, cvds.FS)
         # print(data.shape, data.dtype)
+        plt.imshow(data.T, cmap='viridis', aspect='auto')
         # plt.specgram(data, Fs=cvds.FS, NFFT=128, noverlap=0)
         # time = np.arange(0, len(data)) / cvds.FS
         # plt.plot(time, data)
-        # plt.show()
+        plt.show()
     print("count of sequences per label", count)
 
