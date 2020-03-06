@@ -1,9 +1,9 @@
-import tensorflow as tf
 import os
-from pydub import AudioSegment
-import librosa as lr
-import matplotlib.pyplot as plt
 import numpy as np
+import librosa as lr
+import tensorflow as tf
+import pydub as pd
+import matplotlib.pyplot as plt
 
 tf.compat.v1.enable_eager_execution()
 
@@ -43,17 +43,29 @@ class CommonVoiceDataset:
         balanced_ds = resampled_ds.repeat().batch(100)
         self.dataset = balanced_ds
 
-    def decode_mp3(self, mp3_path):
+    def decode_and_process(self, mp3_path):
         mp3_path = mp3_path.numpy().decode("utf-8")
         if self.decoding is 'librosa':
             data, sr = lr.load(mp3_path, sr=None, mono=True, dtype=np.float32)
+
+            data, _ = lr.effects.trim(data)  # trim leading and trailing silence
+
+            data = lr.util.normalize(data)  # normalize volume
         elif self.decoding is 'pydub':
-            mp3_audio = AudioSegment.from_file(mp3_path)
-            # mp3_audio.set_frame_rate(FS)
+            mp3_audio = pd.AudioSegment.from_file(mp3_path)
+
+            nonsilent_chunks = pd.silence.split_on_silence(mp3_audio)  # trim all silence
+            if len(nonsilent_chunks) > 1:
+                mp3_audio = sum(nonsilent_chunks)  # concatenate non-silent parts
+
+            mp3_audio = pd.effects.normalize(mp3_audio)  # normalize volume
+
             sr = mp3_audio.frame_rate
             data = mp3_audio.get_array_of_samples()
+            # normalize to floating point with std ~ 0.1 like in librosa
             data = np.array(data)
             data = data.astype(np.float32) / (np.std(data) * 10)
+
         else:
             raise ValueError("Unknown decoding type: " + self.decoding)
 
@@ -73,10 +85,9 @@ class CommonVoiceDataset:
         label_idx = tf.argmax(tf.cast(tf.equal(self.lang_labels, label), tf.int32))
         # file = tf.io.read_file(file_path)
         # file = file_path
-        file = tf.py_function(func=self.decode_mp3, inp=[file_path], Tout=tf.float32)
-        offset = self.FS // 2  # start at half a second
-        file = file[offset:offset+self.FS//2]  # normalize length to one second
-        # FIXME: implement random offsetting and normalization
+        file = tf.py_function(func=self.decode_and_process, inp=[file_path], Tout=tf.float32)
+        file = file[:self.FS]  # normalize length to one second
+        # FIXME: implement random offsetting and length normalization
         return file, label_idx
 
 
@@ -96,20 +107,22 @@ def profile_different_decoding():
 
 
 if __name__ == "__main__":
-    profile_different_decoding()
-
-    cvds = CommonVoiceDataset(decoding='librosa')
+    # profile_different_decoding()
+    decoding = 'librosa'
+    decoding = 'pydub'
+    cvds = CommonVoiceDataset(decoding=decoding)
 
     count = {k: 0 for k in range(len(cvds.lang_labels))}
     for features, labels in cvds.dataset.take(3):
         for l in labels.numpy():
             count[l] += 1
+        label = labels.numpy()[0]
         data = features.numpy()[0]
+        lr.output.write_wav('test_{}_{}_{}.wav'.format(decoding, cvds.lang_labels[label], count[label]), data, cvds.FS)
         # print(data.shape, data.dtype)
-        plt.specgram(data, Fs=cvds.FS, NFFT=128, noverlap=0)
-        # time = np.arange(0, len(data)) / FS
+        # plt.specgram(data, Fs=cvds.FS, NFFT=128, noverlap=0)
+        # time = np.arange(0, len(data)) / cvds.FS
         # plt.plot(time, data)
-        # plt.plot(data)
-        plt.show()
+        # plt.show()
     print("count of sequences per label", count)
 
