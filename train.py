@@ -60,11 +60,13 @@ def main(_):
   # for features, labels in ds.dataset.batch(10).take(5):
   #   print("features", features.numpy().shape, "labels", labels.numpy())
 
+  train_ds = ds.dataset.shard(num_shards=2, index=0)
+  valid_ds = ds.dataset.shard(num_shards=2, index=1)
   history = model.fit(
-      ds.dataset.batch(FLAGS.batch_size),
+      train_ds.batch(FLAGS.batch_size),
       epochs=10, verbose=2,
-      # validation_data=validation_dataset,
-      # validation_freq=FLAGS.print_every,
+      validation_data=valid_ds.batch(FLAGS.batch_size),
+      validation_freq=FLAGS.print_every,
       # callbacks=callbacks,
   )
 
@@ -125,7 +127,7 @@ if __name__ == '__main__':
   parser.add_argument(
       '--batch_size',
       type=int,
-      default=128,
+      default=16,
       help='How many items to train with at once',)
   parser.add_argument(
       '--summaries_dir',
@@ -137,7 +139,7 @@ if __name__ == '__main__':
   parser.add_argument(
       '--n_hidden',
       type=int,
-      default=1024,
+      default=64,
       help='Number of hidden units in recurrent models.')
   parser.add_argument(
       '--print_every',
