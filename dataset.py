@@ -9,7 +9,7 @@ tf.compat.v1.enable_eager_execution()
 
 
 class CommonVoiceDataset:
-    def __init__(self, decoding='pydub'):
+    def __init__(self, decoding='librosa'):
         assert decoding in ['pydub', 'librosa']
         self.decoding = decoding
         self.ds_root = '/calc/SHARED/MozillaCommonVoice'
@@ -32,9 +32,9 @@ class CommonVoiceDataset:
 
         list_ds = []
         for label in self.lang_labels:
-          ds_files = tf.data.Dataset.list_files(os.path.join(self.ds_root, label, 'clips', '*'))
-          ds_files = ds_files.map(self.process_path)
-          list_ds.append(ds_files)
+            ds_files = tf.data.Dataset.list_files(os.path.join(self.ds_root, label, 'clips', '*'))
+            ds_files = ds_files.map(self.process_path)
+            list_ds.append(ds_files)
 
         # `sample_from_datasets` defaults to uniform distribution if no weights are provided which is what we want
         resampled_ds = tf.data.experimental.sample_from_datasets(list_ds)
