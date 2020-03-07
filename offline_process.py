@@ -1,4 +1,5 @@
 import os
+import sys
 import numpy as np
 import librosa as lr
 import matplotlib.pyplot as plt
@@ -9,22 +10,32 @@ from tqdm import tqdm
 
 
 if __name__ == "__main__":
-
+    all_langs = ['en', 'de', 'fr', 'it', 'ja', 'nl', 'pt', 'ru', 'sv-SE', 'ta', 'zh-CN']
+    langs = sys.argv[1:]
+    for l in langs:
+        assert l in all_langs, "Unknown language requested: {}".format(l)
+    if len(langs) == 0:
+        langs = all_langs
+    print("Processing following languages:", langs)
     root = '/calc/SHARED/MozillaCommonVoice'
     SR = 16000
     hop_in_seconds = 0.01
     hop_in_samples = int(hop_in_seconds * SR)
     n_fft = 5 * hop_in_samples
     n_channels = 20
-    for subdir, dirs, files in os.walk(root):
-        if 'clips' in subdir:
+    for label in langs:
+        print("label", label)
+        for subdir, dirs, files in os.walk(os.path.join(root, label, 'clips')):
             print("processing", subdir)
-            split_dirs = subdir.split('/')
-            label = split_dirs[-2]
-            hf = h5py.File(os.path.join(root, label, label + '.h5'), 'w')
+            hf_path = os.path.join(root, label, label + '.h5')
+            if os.path.isfile(hf_path):
+                print("File exists:", hf_path)
+                print("Skipping..")
+                continue
+            hf = h5py.File(hf_path, 'w')
             mfccs = []
             skipped_files = 0
-            for f in tqdm(files):
+            for f in tqdm(files, desc=label):
                 try:
                     data, sr = lr.load(os.path.join(subdir, f), sr=SR, mono=True, dtype=np.float32, res_type='kaiser_fast')
                     data, _ = lr.effects.trim(data)  # trim leading and trailing silence
