@@ -16,8 +16,7 @@ if __name__ == "__main__":
     if len(langs) == 0:
         langs = all_langs
     print("Processing following languages:", langs)
-    METHOD = 'tfrecord'
-    METHOD = 'h5'
+    METHOD = 'tfrecord'  # or 'h5'
     n_samples = 10000  # Number of samples to process per language; Use None to process all available
     root = '/calc/SHARED/MozillaCommonVoice'
     SR = 16000  # Sampling rate 16kHz
