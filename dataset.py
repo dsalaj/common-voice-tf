@@ -116,9 +116,6 @@ class CommonVoiceDataset:
         # data = signal_spectrograms
         data = signal_mfccs
 
-
-
-
         assert_op = tf.Assert(tf.equal(tf.reduce_max(sr), self.FS), [sr])
         with tf.control_dependencies([assert_op]):
             return data
