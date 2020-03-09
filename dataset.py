@@ -11,38 +11,46 @@ tf.compat.v1.enable_eager_execution()
 class CommonVoiceDataset:
     def __init__(self, decoding='librosa'):
         assert decoding in ['pydub', 'librosa']
+        self.ONLINE = False
+        self.METHOD = 'tfrecord'
         self.decoding = decoding
         self.ds_root = '/calc/SHARED/MozillaCommonVoice'
         self.lang_labels = [name for name in os.listdir(self.ds_root) if os.path.isdir(os.path.join(self.ds_root, name))]
         # print(self.lang_labels)
         self.lang_labels = self.lang_labels[:5]  # FIXME temp
+        self.lang_labels = ['it', 'nl', 'pt', 'ru', 'zh-CN']
 
-        # Count audio clips per label
-        label_n_clips = {l: 0 for l in self.lang_labels}
-        n_clips = 0
-        for label in self.lang_labels:
-            clips_path = os.path.join(self.ds_root, label, 'clips')
-            num_clips = len(os.listdir(clips_path))
-            label_n_clips[label] += num_clips
-            n_clips += num_clips
-        # print(label_n_clips)
+        if self.ONLINE:
+            # Count audio clips per label
+            label_n_clips = {l: 0 for l in self.lang_labels}
+            n_clips = 0
+            for label in self.lang_labels:
+                clips_path = os.path.join(self.ds_root, label, 'clips')
+                num_clips = len(os.listdir(clips_path))
+                label_n_clips[label] += num_clips
+                n_clips += num_clips
+            # print(label_n_clips)
         self.FS = 48000
 
         # Generate a list of datasets for each label
 
         list_ds = []
         for label in self.lang_labels:
-            ds_files = tf.data.Dataset.list_files(os.path.join(self.ds_root, label, 'clips', '*'))
+            files_path = os.path.join(self.ds_root, label, 'clips', '*') if self.ONLINE else os.path.join(self.ds_root, label, label + '.' + self.METHOD)
+            ds_files = tf.data.Dataset.list_files(files_path)
             ds_files = ds_files.map(self.process_path)
+            print(type(ds_files))
             list_ds.append(ds_files)
 
         # `sample_from_datasets` defaults to uniform distribution if no weights are provided which is what we want
-        resampled_ds = tf.data.experimental.sample_from_datasets(list_ds)
+        self.dataset = tf.data.experimental.sample_from_datasets(list_ds)
+        # self.dataset = list_ds[0]
+        print(type(self.dataset))
 
         # FIXME: should the repeat be applied at this point or before the uniform sampling?
         # balanced_ds = resampled_ds.repeat().batch(100)
-        balanced_ds = resampled_ds
-        self.dataset = balanced_ds
+        # balanced_ds = resampled_ds
+        # self.dataset = balanced_ds
 
     def decode_and_process(self, mp3_path):
         mp3_path = mp3_path.numpy().decode("utf-8")
@@ -89,10 +97,10 @@ class CommonVoiceDataset:
                 2.0 * np.pi * tf.range(tf.compat.v1.to_float(window_length), dtype=dtype) / tf.compat.v1.to_float(window_length))
 
         signal_stft = tf.signal.stft(data,
-                                             frame_length=frame_length,
-                                             frame_step=frame_step,
-                                             fft_length=fft_length,
-                                             window_fn=periodic_hann_window)
+                                     frame_length=frame_length,
+                                     frame_step=frame_step,
+                                     fft_length=fft_length,
+                                     window_fn=periodic_hann_window)
         signal_spectrograms = tf.abs(signal_stft)
         num_spectrogram_bins = signal_stft.shape[-1]
 
@@ -118,11 +126,24 @@ class CommonVoiceDataset:
     def process_path(self, file_path):
         # Example file_path: /calc/SHARED/MozillaCommonVoice/ru/clips/common_voice_ru_18903106.mp3
         # Label is the dir name of two parents up ('ru' for the example above)
-        label = tf.strings.split(file_path, '/')[-3]
+        label = tf.strings.split(file_path, '/')[-3] if self.ONLINE else tf.strings.split(file_path, '/')[-2]
         label_idx = tf.argmax(tf.cast(tf.equal(self.lang_labels, label), tf.int32))
 
-        audio = tf.py_function(func=self.decode_and_process, inp=[file_path], Tout=tf.float32)
-        audio.set_shape((149, 26))
+        if self.ONLINE:
+            audio = tf.py_function(func=self.decode_and_process, inp=[file_path], Tout=tf.float32)
+            audio.set_shape((149, 26))
+        else:
+            audio = tf.data.TFRecordDataset(filenames=[file_path])
+            def parse_tfrecord(serialized):
+                parsed_example = tf.io.parse_single_example(serialized=serialized,
+                        features={'mfcc': tf.io.VarLenFeature(tf.float32)})
+                # return tf.reshape(parsed_example['mfcc'], (20, -1))
+                return tf.sparse.to_dense(parsed_example['mfcc'])
+                # print("SHAPE", parsed_example.shape)
+                # parse_example = tf.reshape(parsed_example, tf.stack([-1, 28]))
+                # return parsed_example
+            audio = audio.map(parse_tfrecord)
+        print(audio, label_idx)
         return audio, label_idx
 
 

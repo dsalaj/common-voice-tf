@@ -18,19 +18,66 @@ from dataset import CommonVoiceDataset
 FLAGS = None
 
 
+class SimpleCommonVoiceDataset:
+  def __init__(self):
+    root = '/calc/SHARED/MozillaCommonVoice'
+    lang_labels = ['nl', 'pt', 'ru', 'zh-CN']
+    n_samples = len(lang_labels)*10000
+    list_ds = []
+    for label in lang_labels:
+      file_path = os.path.join(root, label, label + '.tfrecord')
+    # ds_file = tf.data.TFRecordDataset(filenames=[file_path])
+    ds_file = tf.data.TFRecordDataset(filenames=[os.path.join(root, label, label + '.tfrecord') for label in lang_labels])
+
+    def parse_tfrecord(serialized):
+      parsed_example = tf.io.parse_single_example(
+        serialized=serialized,
+        features={'mfcc': tf.io.VarLenFeature(tf.float32), 'label': tf.io.FixedLenFeature([1], tf.string)})
+      features = tf.reshape(tf.sparse.to_dense(parsed_example['mfcc']), (20, -1))
+      features = tf.transpose(features)
+
+      label = parsed_example['label'][0]  # convert to (time, channels)
+      label_idx = tf.argmax(tf.cast(tf.equal(lang_labels, label), tf.int32))
+      return features, label_idx
+
+    def filter_short(feature, label):
+      return tf.greater(tf.shape(feature)[0], 200)
+
+    ds_file = ds_file.map(parse_tfrecord)
+    ds_file = ds_file.filter(filter_short)
+    ds_file = ds_file.map(lambda f, l: (f[:200], l))
+    # list_ds.append(ds_file)
+
+    # self.dataset = tf.data.experimental.sample_from_datasets(list_ds)
+    ds_file = ds_file.shuffle(n_samples, reshuffle_each_iteration=False)
+    self.dataset = ds_file
+    self.lang_labels = lang_labels
+    self.n_samples = n_samples
+
+
 def main(_):
   # Set the verbosity based on flags (default is INFO, so we see all messages)
   tf.compat.v1.logging.set_verbosity(FLAGS.verbosity)
 
-  ds = CommonVoiceDataset()
+  # ds = CommonVoiceDataset()
+  ds = SimpleCommonVoiceDataset()
+
+  # # PREVIEW DATA SHAPES
+  # print(ds.dataset)
+  # for features, labels in ds.dataset.take(5):
+  #   print("features", features.shape, "labels", labels.numpy())
+  #   print("features", type(features), "labels", type(labels))
+  #   features = tf.reshape(features, (20, -1))
+  #   # print("features", features.numpy().shape, "labels", labels.numpy())
+  # exit()
 
   cell = tf.keras.layers.LSTM(
       FLAGS.n_hidden,
       activation='tanh',
-      batch_input_shape=(
-          FLAGS.batch_size,
-          149,
-          26),
+      # batch_input_shape=(
+      #     FLAGS.batch_size,
+      #     200,
+      #     20),
       return_sequences=False)
   model = tf.keras.models.Sequential([
       cell, 
@@ -56,20 +103,36 @@ def main(_):
       # metrics=[custom_accuracy, ],
   )
 
-  # PREVIEW DATA SHAPES
-  # for features, labels in ds.dataset.batch(10).take(5):
-  #   print("features", features.numpy().shape, "labels", labels.numpy())
+  # SPLIT version 1
+  # train_ds = ds.dataset.shard(num_shards=2, index=0)
+  # valid_ds = ds.dataset.shard(num_shards=2, index=1)
 
-  train_ds = ds.dataset.shard(num_shards=2, index=0)
-  valid_ds = ds.dataset.shard(num_shards=2, index=1)
+  # SPLIT version 2
+  def is_val(x, y):
+    return x % 20 == 0
+
+  def is_train(x, y):
+    return not is_val(x, y)
+
+  recover = lambda x, y: y
+
+  valid_ds = ds.dataset.enumerate().filter(is_val).map(recover)
+  train_ds = ds.dataset.enumerate().filter(is_train).map(recover)
+
+  # SPLIT version 3
+  # train_ds = ds.dataset.take(ds.n_samples - 1000)
+  # valid_ds = ds.dataset.skip(ds.n_samples - 1000)
+
   history = model.fit(
       train_ds.batch(FLAGS.batch_size),
-      epochs=10, verbose=2,
+      epochs=1000, verbose=1,
+      # steps_per_epoch=ds.n_samples // FLAGS.batch_size,
       validation_data=valid_ds.batch(FLAGS.batch_size),
       validation_freq=FLAGS.print_every,
+      # validation_steps=1000 // FLAGS.batch_size,
       # callbacks=callbacks,
+      # class_weight={i: 1. for i in range(len(ds.lang_labels))}
   )
-
 
 
 if __name__ == '__main__':
@@ -127,7 +190,7 @@ if __name__ == '__main__':
   parser.add_argument(
       '--batch_size',
       type=int,
-      default=16,
+      default=128,
       help='How many items to train with at once',)
   parser.add_argument(
       '--summaries_dir',

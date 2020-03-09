@@ -43,6 +43,7 @@ if __name__ == "__main__":
                         return tf.io.TFRecordWriter(hf_path)
                     else:
                         raise ValueError("Unknown storage method:", METHOD)
+
                 def __exit__(self, type, value, traceback):
                     if METHOD is 'h5':
                         self.h5_writer.close()
@@ -63,8 +64,11 @@ if __name__ == "__main__":
                         if METHOD is 'h5':
                             writer.create_dataset(str(idx), data=mfcc.reshape(-1))
                         elif METHOD is 'tfrecord':
-                            mfcc_feature = tf.train.Feature(float_list=tf.train.FloatList(value=mfcc.reshape(-1).tolist()))
-                            example_proto = tf.train.Example(features=tf.train.Features(feature={'mfcc': mfcc_feature}))
+                            mfcc_feature = tf.train.Feature(float_list=tf.train.FloatList(
+                                value=mfcc.reshape(-1).tolist()))
+                            tf_label = tf.train.Feature(bytes_list=tf.train.BytesList(value=[label.encode('utf-8')]))
+                            feature_dict = {'mfcc': mfcc_feature, 'label': tf_label}
+                            example_proto = tf.train.Example(features=tf.train.Features(feature=feature_dict))
                             example = example_proto.SerializeToString()
                             writer.write(example)
                         # make sure to reshape later with .reshape(-1, 28)
