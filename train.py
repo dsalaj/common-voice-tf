@@ -15,6 +15,11 @@ import tensorflow as tf
 from tensorflow.python.platform import gfile
 from dataset import CommonVoiceDataset
 
+from tensorflow.keras import Input
+from tensorflow.keras.layers import Conv2D, Activation, MaxPooling2D, Flatten, Dense, Dropout
+from tensorflow.keras.models import Model
+from tensorflow.keras.optimizers import Nadam
+
 FLAGS = None
 
 
@@ -22,9 +27,9 @@ class SimpleCommonVoiceDataset:
   def __init__(self):
     root = '/calc/SHARED/MozillaCommonVoice'
     lang_labels = ['it', 'nl', 'pt', 'ru', 'zh-CN']
+    self.mfcc_channels = 20
     n_samples = len(lang_labels)*10000
     list_ds = []
-    # ds_file = tf.data.TFRecordDataset(filenames=[os.path.join(root, label, label + '.tfrecord') for label in lang_labels])
     for label in lang_labels:
       file_path = os.path.join(root, label, label + '.tfrecord')
       ds_file = tf.data.TFRecordDataset(filenames=[file_path])
@@ -33,7 +38,7 @@ class SimpleCommonVoiceDataset:
         parsed_example = tf.io.parse_single_example(
           serialized=serialized,
           features={'mfcc': tf.io.VarLenFeature(tf.float32), 'label': tf.io.FixedLenFeature([1], tf.string)})
-        features = tf.reshape(tf.sparse.to_dense(parsed_example['mfcc']), (20, -1))
+        features = tf.reshape(tf.sparse.to_dense(parsed_example['mfcc']), (self.mfcc_channels, -1))
         features = tf.transpose(features)
 
         label = parsed_example['label'][0]  # convert to (time, channels)
@@ -41,16 +46,20 @@ class SimpleCommonVoiceDataset:
         return features, label_idx
 
       def filter_short(feature, label):
-        return tf.greater(tf.shape(feature)[0], 200)
+        return tf.greater(tf.shape(feature)[0], 100)
+
+      def repeat_short(feature, label):
+        repf = tf.tile(feature,  tf.constant([4, 1], tf.int32))
+        trimed = repf[:400]
+        return trimed, label
 
       ds_file = ds_file.map(parse_tfrecord)
       ds_file = ds_file.filter(filter_short)
-      ds_file = ds_file.map(lambda f, l: (f[:200], l))
+      ds_file = ds_file.map(repeat_short)
       list_ds.append(ds_file)
 
     self.dataset = tf.data.experimental.sample_from_datasets(list_ds)
     # ds_file = ds_file.shuffle(n_samples, reshuffle_each_iteration=False)
-    # self.dataset = ds_file
     self.lang_labels = lang_labels
     self.n_samples = n_samples
 
@@ -73,36 +82,46 @@ def main(_):
   # print(count)
   # exit()
 
-  cell = tf.keras.layers.LSTM(
-      FLAGS.n_hidden,
-      activation='tanh',
-      # batch_input_shape=(
-      #     FLAGS.batch_size,
-      #     200,
-      #     20),
-      return_sequences=False)
-  model = tf.keras.models.Sequential([
-      cell, 
-      # tf.keras.layers.BatchNormalization(),
-      tf.keras.layers.Dense(len(ds.lang_labels)),
-  ])
-
-  @tf.function()
-  def custom_accuracy(y_actual, y_pred, name='CustomAccuracy'):
-      return tf.keras.metrics.sparse_categorical_accuracy(y_actual, y_pred)
-      # custom_loss = tf.reduce_mean(tf.equal(y_actual, y_pred))
-      # return custom_loss
+  if FLAGS.model == 'lstm':
+    cell = tf.keras.layers.LSTM(
+        FLAGS.n_hidden,
+        activation='tanh',
+        batch_input_shape=(
+            FLAGS.batch_size,
+            400,
+            ds.mfcc_channels),
+        return_sequences=False)
+    model = tf.keras.models.Sequential([
+        cell,
+        # tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.Dense(len(ds.lang_labels)),
+    ])
+  elif FLAGS.model == 'cnn':
+    ds.dataset = ds.dataset.map(lambda x, y: (tf.expand_dims(x, 2), y))
+    i = Input(shape=(400, ds.mfcc_channels, 1))
+    m = Conv2D(16, (3, 3), activation='elu', padding='same')(i)
+    m = MaxPooling2D()(m)
+    m = Conv2D(32, (3, 3), activation='elu', padding='same')(m)
+    m = MaxPooling2D()(m)
+    m = Conv2D(64, (3, 3), activation='elu', padding='same')(m)
+    m = MaxPooling2D()(m)
+    m = Conv2D(128, (3, 3), activation='elu', padding='same')(m)
+    m = MaxPooling2D()(m)
+    m = Flatten()(m)
+    m = Dense(512, activation='elu')(m)
+    # m = Dropout(0.5)(m)
+    o = Dense(len(ds.lang_labels), activation='softmax')(m)
+    model = Model(inputs=i, outputs=o)
+  else:
+    raise ValueError("Unknown model", FLAGS.model)
 
   def loss(labels, logits):
       return tf.keras.losses.sparse_categorical_crossentropy(labels, logits, from_logits=True)
 
-
   model.compile(
       loss=loss,
       optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
-      # metrics=['accuracy', ],
-      # learning_rate=FLAGS.learning_rate,
-      metrics=[custom_accuracy, ],
+      metrics=['sparse_categorical_accuracy', ],
   )
 
   # SPLIT version 1
@@ -143,6 +162,13 @@ def main(_):
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
+  parser.add_argument(
+      '--model',
+      type=str,
+      default='lstm',
+      help="""\
+      Model to train: lstm or cnn
+      """)
   parser.add_argument(
       '--data_dir',
       type=str,
@@ -208,7 +234,7 @@ if __name__ == '__main__':
   parser.add_argument(
       '--n_hidden',
       type=int,
-      default=64,
+      default=256,
       help='Number of hidden units in recurrent models.')
   parser.add_argument(
       '--print_every',
