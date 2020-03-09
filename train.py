@@ -21,36 +21,36 @@ FLAGS = None
 class SimpleCommonVoiceDataset:
   def __init__(self):
     root = '/calc/SHARED/MozillaCommonVoice'
-    lang_labels = ['nl', 'pt', 'ru', 'zh-CN']
+    lang_labels = ['it', 'nl', 'pt', 'ru', 'zh-CN']
     n_samples = len(lang_labels)*10000
     list_ds = []
+    # ds_file = tf.data.TFRecordDataset(filenames=[os.path.join(root, label, label + '.tfrecord') for label in lang_labels])
     for label in lang_labels:
       file_path = os.path.join(root, label, label + '.tfrecord')
-    # ds_file = tf.data.TFRecordDataset(filenames=[file_path])
-    ds_file = tf.data.TFRecordDataset(filenames=[os.path.join(root, label, label + '.tfrecord') for label in lang_labels])
+      ds_file = tf.data.TFRecordDataset(filenames=[file_path])
 
-    def parse_tfrecord(serialized):
-      parsed_example = tf.io.parse_single_example(
-        serialized=serialized,
-        features={'mfcc': tf.io.VarLenFeature(tf.float32), 'label': tf.io.FixedLenFeature([1], tf.string)})
-      features = tf.reshape(tf.sparse.to_dense(parsed_example['mfcc']), (20, -1))
-      features = tf.transpose(features)
+      def parse_tfrecord(serialized):
+        parsed_example = tf.io.parse_single_example(
+          serialized=serialized,
+          features={'mfcc': tf.io.VarLenFeature(tf.float32), 'label': tf.io.FixedLenFeature([1], tf.string)})
+        features = tf.reshape(tf.sparse.to_dense(parsed_example['mfcc']), (20, -1))
+        features = tf.transpose(features)
 
-      label = parsed_example['label'][0]  # convert to (time, channels)
-      label_idx = tf.argmax(tf.cast(tf.equal(lang_labels, label), tf.int32))
-      return features, label_idx
+        label = parsed_example['label'][0]  # convert to (time, channels)
+        label_idx = tf.argmax(tf.cast(tf.equal(lang_labels, label), tf.int32))
+        return features, label_idx
 
-    def filter_short(feature, label):
-      return tf.greater(tf.shape(feature)[0], 200)
+      def filter_short(feature, label):
+        return tf.greater(tf.shape(feature)[0], 200)
 
-    ds_file = ds_file.map(parse_tfrecord)
-    ds_file = ds_file.filter(filter_short)
-    ds_file = ds_file.map(lambda f, l: (f[:200], l))
-    # list_ds.append(ds_file)
+      ds_file = ds_file.map(parse_tfrecord)
+      ds_file = ds_file.filter(filter_short)
+      ds_file = ds_file.map(lambda f, l: (f[:200], l))
+      list_ds.append(ds_file)
 
-    # self.dataset = tf.data.experimental.sample_from_datasets(list_ds)
-    ds_file = ds_file.shuffle(n_samples, reshuffle_each_iteration=False)
-    self.dataset = ds_file
+    self.dataset = tf.data.experimental.sample_from_datasets(list_ds)
+    # ds_file = ds_file.shuffle(n_samples, reshuffle_each_iteration=False)
+    # self.dataset = ds_file
     self.lang_labels = lang_labels
     self.n_samples = n_samples
 
@@ -64,11 +64,13 @@ def main(_):
 
   # # PREVIEW DATA SHAPES
   # print(ds.dataset)
-  # for features, labels in ds.dataset.take(5):
+  # count = {i: 0 for i in range(len(ds.lang_labels))}
+  # for features, labels in ds.dataset.take(FLAGS.batch_size):
   #   print("features", features.shape, "labels", labels.numpy())
-  #   print("features", type(features), "labels", type(labels))
-  #   features = tf.reshape(features, (20, -1))
+  #   count[labels.numpy()] += 1
+  #   # print("features", type(features), "labels", type(labels))
   #   # print("features", features.numpy().shape, "labels", labels.numpy())
+  # print(count)
   # exit()
 
   cell = tf.keras.layers.LSTM(
@@ -98,38 +100,42 @@ def main(_):
   model.compile(
       loss=loss,
       optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
-      metrics=['accuracy', ],
+      # metrics=['accuracy', ],
       # learning_rate=FLAGS.learning_rate,
-      # metrics=[custom_accuracy, ],
+      metrics=[custom_accuracy, ],
   )
 
   # SPLIT version 1
-  # train_ds = ds.dataset.shard(num_shards=2, index=0)
-  # valid_ds = ds.dataset.shard(num_shards=2, index=1)
+  train_ds = ds.dataset.shard(num_shards=4, index=0)
+  train_ds.concatenate(ds.dataset.shard(num_shards=4, index=1))
+  train_ds.concatenate(ds.dataset.shard(num_shards=4, index=2))
+  valid_ds = ds.dataset.shard(num_shards=4, index=3)
 
   # SPLIT version 2
-  def is_val(x, y):
-    return x % 20 == 0
-
-  def is_train(x, y):
-    return not is_val(x, y)
-
-  recover = lambda x, y: y
-
-  valid_ds = ds.dataset.enumerate().filter(is_val).map(recover)
-  train_ds = ds.dataset.enumerate().filter(is_train).map(recover)
+  # def is_val(x, y):
+  #   return x % 20 == 0
+  #
+  # def is_train(x, y):
+  #   return not is_val(x, y)
+  #
+  # recover = lambda x, y: y
+  #
+  # valid_ds = ds.dataset.enumerate().filter(is_val).map(recover)
+  # train_ds = ds.dataset.enumerate().filter(is_train).map(recover)
+  # n_valid_samples = ds.n_samples // 20
+  # n_train_samples = ds.n_samples - n_valid_samples
 
   # SPLIT version 3
   # train_ds = ds.dataset.take(ds.n_samples - 1000)
   # valid_ds = ds.dataset.skip(ds.n_samples - 1000)
 
   history = model.fit(
-      train_ds.batch(FLAGS.batch_size),
-      epochs=1000, verbose=1,
-      # steps_per_epoch=ds.n_samples // FLAGS.batch_size,
-      validation_data=valid_ds.batch(FLAGS.batch_size),
+      train_ds.repeat().batch(FLAGS.batch_size),
+      epochs=500, verbose=1,
+      steps_per_epoch=int(ds.n_samples * 0.75) // FLAGS.batch_size,
+      validation_data=valid_ds.repeat().batch(FLAGS.batch_size),
       validation_freq=FLAGS.print_every,
-      # validation_steps=1000 // FLAGS.batch_size,
+      validation_steps=int(ds.n_samples * 0.25) // FLAGS.batch_size,
       # callbacks=callbacks,
       # class_weight={i: 1. for i in range(len(ds.lang_labels))}
   )
