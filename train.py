@@ -103,9 +103,10 @@ def main(_):
         count = {i: 0 for i in range(len(ds.lang_labels))}
         for features, labels in ds.dataset.take(FLAGS.batch_size):
             print("features", features.shape, "labels", labels.numpy())
+            print("min", np.min(features), "max", np.max(features))
+            for i in range(features.shape[1]):
+                print(i, "min", np.min(features[:, i]), "max", np.max(features[:, i]))
             count[labels.numpy()] += 1
-            # print("features", type(features), "labels", type(labels))
-            # print("features", features.numpy().shape, "labels", labels.numpy())
         print(count)
         exit()
 
@@ -119,8 +120,9 @@ def main(_):
                 ds.mfcc_channels),
             return_sequences=False)
         model = tf.keras.models.Sequential([
+            tf.keras.layers.GaussianNoise(FLAGS.noise_std),
             cell,
-            # tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.BatchNormalization(),
             tf.keras.layers.Dense(len(ds.lang_labels)),
         ])
     elif FLAGS.model == 'cnn':
@@ -182,18 +184,11 @@ if __name__ == '__main__':
       Where to download the speech training data to.
       """)
     parser.add_argument(
-        '--background_volume',
+        '--noise_std',
         type=float,
-        default=0.1,
+        default=0.0,
         help="""\
-      How loud the background noise should be, between 0 and 1. FIXME: not implemented
-      """)
-    parser.add_argument(
-        '--background_frequency',
-        type=float,
-        default=0.8,
-        help="""\
-      How many of the training samples have background noise mixed in. FIXME: not implemented
+      Std of the noise to be added during training
       """)
 
     parser.add_argument(
