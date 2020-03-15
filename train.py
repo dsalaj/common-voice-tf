@@ -212,7 +212,7 @@ def main(_):
     # TODO: try autokeras
     #import autokeras as ak
     # Initialize the classifier.
-    #model = ak.ImageClassifier(max_trials=1, loss=loss, num_classes=len(ds.lang_labels))  # It tries 10 different models.
+    #model = ak.ImageClassifier(max_trials=10, loss=loss, num_classes=len(ds.lang_labels))  # It tries 10 different models.
 
     model.compile(
         loss=loss,
@@ -225,7 +225,7 @@ def main(_):
 
     #FIXME: include early stopping and checkpointer
     #early_stopping = EarlyStopping(monitor='loss', min_delta=0, patience=3, verbose=1, mode='auto')
-    ##checkpointer = ModelCheckpoint(filepath='model.weights.best.hdf5', verbose=1, save_best_only=True)
+    #checkpointer = ModelCheckpoint(filepath='model.weights.best.hdf5', verbose=1, save_best_only=True)
     #reduce_learning_rate = ReduceLROnPlateau(monitor='loss', factor=0.9,
     #                          patience=3, min_lr=1e-3)
 
