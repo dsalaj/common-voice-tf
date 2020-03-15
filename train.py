@@ -16,8 +16,11 @@ from tensorflow.python.platform import gfile
 from dataset import CommonVoiceDataset
 
 from tensorflow.keras import Input
-from tensorflow.keras.layers import Conv2D, Activation, MaxPooling2D, Flatten, Dense, Dropout
-from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Conv2D, Activation, MaxPooling2D, Flatten, Dense, Dropout, Conv1D, MaxPool1D, AveragePooling2D, MaxPooling1D, LSTM, Bidirectional
+from tensorflow.keras.models import Model, Sequential
+from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.callbacks import ModelCheckpoint
+from tensorflow.keras.callbacks import ReduceLROnPlateau
 from tensorflow.keras.optimizers import Nadam
 
 FLAGS = None
@@ -110,7 +113,7 @@ def main(_):
         exit()
 
     if FLAGS.model == 'lstm':
-        cell = tf.keras.layers.LSTM(
+        cell = LSTM(
             FLAGS.n_hidden,
             activation='tanh',
             batch_input_shape=(
@@ -118,41 +121,119 @@ def main(_):
                 400,  # FIXME: 4s clips for now
                 ds.mfcc_channels),
             return_sequences=False)
-        model = tf.keras.models.Sequential([
+        model = Sequential([
             cell,
             # tf.keras.layers.BatchNormalization(),
             tf.keras.layers.Dense(len(ds.lang_labels)),
         ])
-    elif FLAGS.model == 'cnn':
+        print(model.summary())
+    elif FLAGS.model == 'bilstm':
+        cell = Bidirectional(LSTM(
+            FLAGS.n_hidden,
+            activation='tanh',
+            batch_input_shape=(
+                FLAGS.batch_size,
+                400,  # FIXME: 4s clips for now
+                ds.mfcc_channels),
+            return_sequences=False))
+        model = Sequential([
+            cell,
+            # tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.Dense(len(ds.lang_labels)),
+        ])
+        print(model.summary())
+    elif FLAGS.model == 'cnn2D_inc':
+        #TODO: try cnns created for text classification
         ds.dataset = ds.dataset.map(lambda x, y: (tf.expand_dims(x, 2), y))
-        i = Input(shape=(400, ds.mfcc_channels, 1))
-        m = Conv2D(16, (3, 3), activation='elu', padding='same')(i)
-        m = MaxPooling2D()(m)
-        m = Conv2D(32, (3, 3), activation='elu', padding='same')(m)
-        m = MaxPooling2D()(m)
-        m = Conv2D(64, (3, 3), activation='elu', padding='same')(m)
-        m = MaxPooling2D()(m)
-        m = Conv2D(128, (3, 3), activation='elu', padding='same')(m)
-        m = MaxPooling2D()(m)
-        m = Flatten()(m)
-        m = Dense(512, activation='elu')(m)
-        # m = Dropout(0.5)(m)
-        o = Dense(len(ds.lang_labels), activation='softmax')(m)
-        model = Model(inputs=i, outputs=o)
+        inp = Input(shape=(400, ds.mfcc_channels, 1))
+        filter_sizes = [2, 3, 4, 5]
+        num_filters = 36
+
+        maxpool_pool = []
+        for i in range(len(filter_sizes)):
+            conv = Conv2D(num_filters, kernel_size=(filter_sizes[i], 20),
+                          kernel_initializer='he_normal', activation='tanh')(inp)
+            maxpool_pool.append(MaxPooling2D(pool_size=(20 - filter_sizes[i] + 1, 1))(conv))
+
+        z = tf.keras.layers.Concatenate(axis=1)(maxpool_pool)
+        z = Flatten()(z)
+        z = Dense(256, activation='tanh')(z)
+        z = Dense(125, activation='tanh')(z)
+        outp = Dense(len(ds.lang_labels), activation="softmax")(z)
+        model = Model(inputs=inp, outputs=outp)
+        print(model.summary())
+    elif FLAGS.model == 'cnn1D':
+
+        ds.dataset = ds.dataset.map(lambda x, y: (tf.reshape(x, [-1]), y))
+        ds.dataset = ds.dataset.map(lambda x, y: (tf.expand_dims(x, 1), y))
+
+        model = Sequential([
+            Conv1D(16, input_shape=(ds.mfcc_channels*400, 1), kernel_size=3, activation='tanh'),
+            MaxPooling1D(pool_size=3),
+            Conv1D(32, kernel_size=3, activation='tanh'),
+            MaxPooling1D(pool_size=3),
+            Conv1D(64, kernel_size=3, activation='tanh'),
+            MaxPooling1D(pool_size=3),
+            Conv1D(128, kernel_size=3, activation='tanh'),
+            MaxPooling1D(pool_size=3),
+            Flatten(),
+            Dense(256, activation='tanh'),
+            Dense(125, activation='tanh'),
+            Dense(len(ds.lang_labels), activation='softmax')
+        ])
+
+        print(model.summary())
+    elif FLAGS.model == 'cnn2D':
+        ds.dataset = ds.dataset.map(lambda x, y: (tf.expand_dims(x, 2), y))
+
+        model = Sequential([
+            Conv2D(16, (3, 3), input_shape=(400, ds.mfcc_channels, 1), activation='tanh', padding='same'),
+            AveragePooling2D(),
+            Conv2D(32, (3, 3), activation='tanh', padding='same'),
+            AveragePooling2D(),
+            Conv2D(64, (3, 3), activation='tanh', padding='same'),
+            AveragePooling2D(),
+            Conv2D(128, (3, 3), activation='tanh', padding='same'),
+            AveragePooling2D(),
+            Flatten(),
+            Dense(256, activation='tanh'),
+            Dense(125, activation='tanh'),
+            Dense(len(ds.lang_labels), activation='softmax')
+        ])
+
+        print(model.summary())
     else:
         raise ValueError("Unknown model", FLAGS.model)
+
 
     def loss(labels, logits):
         return tf.keras.losses.sparse_categorical_crossentropy(labels, logits, from_logits=True)
 
+    # TODO: try autokeras
+    #import autokeras as ak
+    # Initialize the classifier.
+    #model = ak.ImageClassifier(max_trials=1, loss=loss, num_classes=len(ds.lang_labels))  # It tries 10 different models.
+
     model.compile(
         loss=loss,
         # TODO: try Nadam(lr=5e-3)
-        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=5e-4),
         metrics=['sparse_categorical_accuracy', ],
     )
 
     train_ds, valid_ds = split_dataset(ds)
+
+    #FIXME: include early stopping and checkpointer
+    #early_stopping = EarlyStopping(monitor='loss', min_delta=0, patience=3, verbose=1, mode='auto')
+    ##checkpointer = ModelCheckpoint(filepath='model.weights.best.hdf5', verbose=1, save_best_only=True)
+    #reduce_learning_rate = ReduceLROnPlateau(monitor='loss', factor=0.9,
+    #                          patience=3, min_lr=1e-3)
+
+    #TODO: try autokeras
+    #model.fit(train_ds.batch(FLAGS.batch_size) ,epochs=FLAGS.epochs, verbose=2,
+    #          steps_per_epoch=int(ds.n_samples * 0.75) // FLAGS.batch_size,
+    #          validation_freq=FLAGS.print_every,
+    #          validation_steps=int(ds.n_samples * 0.25) // FLAGS.batch_size)
 
     history = model.fit(
         train_ds.repeat().batch(FLAGS.batch_size),
@@ -161,23 +242,22 @@ def main(_):
         validation_data=valid_ds.repeat().batch(FLAGS.batch_size),
         validation_freq=FLAGS.print_every,
         validation_steps=int(ds.n_samples * 0.25) // FLAGS.batch_size,
-        # callbacks=callbacks,
+        #callbacks=[early_stopping, checkpointer, reduce_learning_rate],
     )
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '--model',
         type=str,
-        default='lstm',
+        default='cnn2D',
         help="""\
-      Model to train: lstm or cnn
+      Model to train: lstm, bilstm, cnn1D, cnn2D, cnn2D_inc, 
       """)
     parser.add_argument(
         '--data_dir',
         type=str,
-        default='/calc/SHARED/MozillaCommonVoice',
+        default='/Users/a.ahmetovic@netconomy.net/MozillaCommonVoice/',
         help="""\
       Where to download the speech training data to.
       """)
@@ -204,7 +284,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--batch_size',
         type=int,
-        default=128,
+        default=256,
         help='How many items to train with at once', )
     parser.add_argument(
         '--summaries_dir',

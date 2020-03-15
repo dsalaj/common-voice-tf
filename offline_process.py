@@ -7,6 +7,14 @@ import h5py
 from tqdm import tqdm
 import tensorflow as tf
 
+def generate_features_2D(data, n_channels=128):
+    mel_specgram = lr.feature.melspectrogram(data, n_mels=n_channels,
+                                             hop_length=data.shape[0] // n_channels)
+    log_mel_specgram = lr.core.amplitude_to_db(mel_specgram) ** 2
+    start = (log_mel_specgram.shape[1] - n_channels) // 2
+    features = log_mel_specgram[:, start:start + n_channels]
+    assert features.shape == (n_channels, n_channels)
+    return features
 
 if __name__ == "__main__":
     all_langs = ['en', 'de', 'fr', 'it', 'ja', 'nl', 'pt', 'ru', 'sv-SE', 'ta', 'zh-CN']
@@ -18,7 +26,7 @@ if __name__ == "__main__":
     print("Processing following languages:", langs)
     METHOD = 'tfrecord'  # or 'h5'
     n_samples = 10000  # Number of samples to process per language; Use None to process all available
-    root = '/calc/SHARED/MozillaCommonVoice'
+    root = '/Users/a.ahmetovic@netconomy.net/MozillaCommonVoice/'
     SR = 16000  # Sampling rate 16kHz
     hop_in_seconds = 0.01  # 10ms stride
     hop_in_samples = int(hop_in_seconds * SR)
