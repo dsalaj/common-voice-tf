@@ -26,7 +26,7 @@ from tensorflow.keras.optimizers import Nadam
 from enum import Enum
 
 class DatasetProcessingType(Enum):
-    EMBEDDING_MASKING = "EMBEDDING_MASKING",
+    PADDING_MASKING = "PADDING_MASKING",
     RAGGED = "RAGGED",
     NORMAL = "NORMAL"
 
@@ -35,7 +35,7 @@ DEBUG_DATASET = False
 # TODO: EMBEDDING_MASKING will only work with lstm and bilstm networks
 # TODO: NORMAL will work with cnn1D and cnn2D networks
 # TODO: RAGGED is not supported for neither lstm, bilstm, cnn1D, cnn2D, here is only for reference
-TYPE = DatasetProcessingType.NORMAL
+TYPE = DatasetProcessingType.PADDING_MASKING
 
 class OfflineCommonVoiceDataset:
     def __init__(self):
@@ -92,7 +92,7 @@ class OfflineCommonVoiceDataset:
                     label_idx = tf.argmax(tf.cast(tf.equal(lang_labels, label), tf.int32))
                     return features, label_idx
 
-            class EmbeddingMaskingProcessing(DatasetProcessing):
+            class PaddingMaskingProcessing(DatasetProcessing):
 
                 def process(self, ds_file):
                     return ds_file.map(self.parse_normal)
@@ -118,8 +118,8 @@ class OfflineCommonVoiceDataset:
                         return NormalProcessing(mfcc_channels, timestamps).process(ds_file)
                     elif type == DatasetProcessingType.RAGGED:
                         return RaggedProcessing(mfcc_channels, timestamps).process(ds_file)
-                    elif type == DatasetProcessingType.EMBEDDING_MASKING:
-                        return EmbeddingMaskingProcessing(mfcc_channels, timestamps).process(ds_file)
+                    elif type == DatasetProcessingType.PADDING_MASKING:
+                        return PaddingMaskingProcessing(mfcc_channels, timestamps).process(ds_file)
 
             ds_file = ProcessingFactory.get_processor(self.mfcc_channels, self.timestamps,  ds_file, TYPE)
             list_ds.append(ds_file)
@@ -349,7 +349,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--model',
         type=str,
-        default='cnn1D',
+        default='lstm',
         help="""\
       Model to train: lstm, bilstm, cnn1D, cnn2D, cnn2D_inc, 
       """)
