@@ -7,6 +7,7 @@ import os.path
 import sys
 import json
 from datetime import datetime
+import abc
 
 import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
@@ -22,43 +23,105 @@ from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.callbacks import ModelCheckpoint
 from tensorflow.keras.callbacks import ReduceLROnPlateau
 from tensorflow.keras.optimizers import Nadam
+from enum import Enum
+
+class DatasetProcessingType(Enum):
+    EMBEDDING_MASKING = "EMBEDDING_MASKING",
+    RAGGED = "RAGGED",
+    NORMAL = "NORMAL"
 
 FLAGS = None
 DEBUG_DATASET = False
-
+# TODO: EMBEDDING_MASKING will only work with lstm and bilstm networks
+# TODO: NORMAL will work with cnn1D and cnn2D networks
+# TODO: RAGGED is not supported for neither lstm, bilstm, cnn1D, cnn2D, here is only for reference
+TYPE = DatasetProcessingType.NORMAL
 
 class OfflineCommonVoiceDataset:
     def __init__(self):
         lang_labels = ['it', 'nl', 'pt', 'ru', 'zh-CN']
         self.mfcc_channels = 20
+        self.timestamps = 400 # FIXME: 4s clips for now
         n_samples = len(lang_labels) * 10000
         list_ds = []
         for label in lang_labels:
             file_path = os.path.join(FLAGS.data_dir, label, label + '.tfrecord')
             ds_file = tf.data.TFRecordDataset(filenames=[file_path])
 
-            def parse_tfrecord(serialized):
-                parsed_example = tf.io.parse_single_example(
-                    serialized=serialized,
-                    features={'mfcc': tf.io.VarLenFeature(tf.float32), 'label': tf.io.FixedLenFeature([1], tf.string)})
-                features = tf.reshape(tf.sparse.to_dense(parsed_example['mfcc']), (self.mfcc_channels, -1))
-                features = tf.transpose(features)
+            class DatasetProcessing(abc.ABC):
 
-                label = parsed_example['label'][0]  # convert to (time, channels)
-                label_idx = tf.argmax(tf.cast(tf.equal(lang_labels, label), tf.int32))
-                return features, label_idx
+                def __init__(self, mfcc_channels, timestamps):
+                    self.mfcc_channels = mfcc_channels
+                    self.timestamps = timestamps
 
-            def filter_short(feature, label):
-                return tf.greater(tf.shape(feature)[0], 100)
+                @abc.abstractmethod
+                def process(self, ds_file):
+                    raise NotImplementedError
 
-            def repeat_short(feature, label):
-                repf = tf.tile(feature, tf.constant([4, 1], tf.int32))
-                trimed = repf[:400]  # FIXME: 4s clips for now
-                return trimed, label
+                def filter_short(self, feature, label):
+                    return tf.greater(tf.shape(feature)[0], 100)
 
-            ds_file = ds_file.map(parse_tfrecord)
-            ds_file = ds_file.filter(filter_short)
-            ds_file = ds_file.map(repeat_short)
+                def repeat_short(self, feature, label):
+                    repf = tf.tile(feature, tf.constant([4, 1], tf.int32))
+                    trimed = repf[:self.timestamps]  # FIXME: 4s clips for now
+                    return trimed, label
+
+                def parse_normal(self, serialized):
+                    parsed_example = tf.io.parse_single_example(
+                        serialized=serialized,
+                        features={'mfcc': tf.io.VarLenFeature(tf.float32),
+                                  'label': tf.io.FixedLenFeature([1], tf.string)})
+
+                    features = tf.reshape(tf.sparse.to_dense(parsed_example['mfcc']), (self.mfcc_channels, -1))
+                    features = tf.transpose(features)
+
+                    label = parsed_example['label'][0]  # convert to (time, channels)
+                    label_idx = tf.argmax(tf.cast(tf.equal(lang_labels, label), tf.int32))
+                    return features, label_idx
+
+                def parse_ragged(self, serialized):
+                    parsed_example = tf.io.parse_single_example(
+                        serialized=serialized,
+                        features={'mfcc': tf.io.VarLenFeature(tf.float32),
+                                  'label': tf.io.FixedLenFeature([1], tf.string)})
+
+                    features = tf.RaggedTensor.from_row_lengths(parsed_example['mfcc'].values,
+                                                                row_lengths=[len(parsed_example['mfcc'].values)])
+
+                    label = parsed_example['label'][0]  # convert to (time, channels)
+                    label_idx = tf.argmax(tf.cast(tf.equal(lang_labels, label), tf.int32))
+                    return features, label_idx
+
+            class EmbeddingMaskingProcessing(DatasetProcessing):
+
+                def process(self, ds_file):
+                    return ds_file.map(self.parse_normal)
+
+            class NormalProcessing(DatasetProcessing):
+
+                def process(self, ds_file):
+                    ds_file = ds_file.map(self.parse_normal)
+                    ds_file = ds_file.filter(self.filter_short)
+                    return ds_file.map(self.repeat_short)
+
+            class RaggedProcessing(DatasetProcessing):
+
+                def process(self, ds_file):
+                    return ds_file.map(self.parse_ragged)
+
+
+            class ProcessingFactory:
+
+                @staticmethod
+                def get_processor(mfcc_channels, timestamps, ds_file, type=DatasetProcessingType.NORMAL):
+                    if type == DatasetProcessingType.NORMAL:
+                        return NormalProcessing(mfcc_channels, timestamps).process(ds_file)
+                    elif type == DatasetProcessingType.RAGGED:
+                        return RaggedProcessing(mfcc_channels, timestamps).process(ds_file)
+                    elif type == DatasetProcessingType.EMBEDDING_MASKING:
+                        return EmbeddingMaskingProcessing(mfcc_channels, timestamps).process(ds_file)
+
+            ds_file = ProcessingFactory.get_processor(self.mfcc_channels, self.timestamps,  ds_file, TYPE)
             list_ds.append(ds_file)
 
         self.dataset = tf.data.experimental.sample_from_datasets(list_ds)
@@ -118,34 +181,57 @@ def main(_):
             activation='tanh',
             batch_input_shape=(
                 FLAGS.batch_size,
-                400,  # FIXME: 4s clips for now
+                ds.timestamps,
                 ds.mfcc_channels),
             return_sequences=False)
         model = Sequential([
+            tf.keras.layers.Masking(mask_value=0.,
+                                    input_shape=(ds.timestamps, ds.mfcc_channels)),
             cell,
             # tf.keras.layers.BatchNormalization(),
             tf.keras.layers.Dense(len(ds.lang_labels)),
         ])
         print(model.summary())
+
+        # call padded_batch on the dataset to created batched samples padded by zeros
+        # padded_shapes represent the dimension of the features [None, ds.mfcc_channels] (variable dimension, ds.mfcc_channels),
+        # and [] (scalar dimension) for labels
+        # train, validation dataset split
+        train_ds, valid_ds = split_dataset(ds)
+        train_ds = train_ds.repeat().padded_batch(batch_size=FLAGS.batch_size, padded_shapes=([None, ds.mfcc_channels], []))
+        valid_ds = valid_ds.repeat().padded_batch(batch_size=FLAGS.batch_size,
+                                                  padded_shapes=([None, ds.mfcc_channels], []))
     elif FLAGS.model == 'bilstm':
         cell = Bidirectional(LSTM(
             FLAGS.n_hidden,
             activation='tanh',
             batch_input_shape=(
                 FLAGS.batch_size,
-                400,  # FIXME: 4s clips for now
+                ds.timestamps,  # FIXME: 4s clips for now
                 ds.mfcc_channels),
             return_sequences=False))
         model = Sequential([
+            tf.keras.layers.Masking(mask_value=0.,
+                                    input_shape=(ds.timestamps, ds.mfcc_channels)),
             cell,
             # tf.keras.layers.BatchNormalization(),
             tf.keras.layers.Dense(len(ds.lang_labels)),
         ])
         print(model.summary())
+
+        # call padded_batch on the dataset to created batched samples padded by zeros
+        # padded_shapes represent the dimension of the features [None, ds.mfcc_channels] (variable dimension, ds.mfcc_channels),
+        # and [] (scalar dimension) for labels
+        # train, validation dataset split
+        train_ds, valid_ds = split_dataset(ds)
+        train_ds = train_ds.repeat().padded_batch(batch_size=FLAGS.batch_size,
+                                                  padded_shapes=([None, ds.mfcc_channels], []))
+        valid_ds = valid_ds.repeat().padded_batch(batch_size=FLAGS.batch_size,
+                                                  padded_shapes=([None, ds.mfcc_channels], []))
     elif FLAGS.model == 'cnn2D_inc':
         #TODO: try cnns created for text classification
         ds.dataset = ds.dataset.map(lambda x, y: (tf.expand_dims(x, 2), y))
-        inp = Input(shape=(400, ds.mfcc_channels, 1))
+        inp = Input(shape=(ds.timestamps, ds.mfcc_channels, 1))
         filter_sizes = [2, 3, 4, 5]
         num_filters = 36
 
@@ -162,13 +248,18 @@ def main(_):
         outp = Dense(len(ds.lang_labels), activation="softmax")(z)
         model = Model(inputs=inp, outputs=outp)
         print(model.summary())
+
+        # train, validation dataset split
+        train_ds, valid_ds = split_dataset(ds)
+        train_ds = train_ds.repeat().batch(FLAGS.batch_size)
+        valid_ds = valid_ds.repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'cnn1D':
 
         ds.dataset = ds.dataset.map(lambda x, y: (tf.reshape(x, [-1]), y))
         ds.dataset = ds.dataset.map(lambda x, y: (tf.expand_dims(x, 1), y))
 
         model = Sequential([
-            Conv1D(16, input_shape=(ds.mfcc_channels*400, 1), kernel_size=3, activation='tanh'),
+            Conv1D(16, input_shape=(ds.mfcc_channels*ds.timestamps, 1), kernel_size=3, activation='tanh'),
             MaxPooling1D(pool_size=3),
             Conv1D(32, kernel_size=3, activation='tanh'),
             MaxPooling1D(pool_size=3),
@@ -183,11 +274,16 @@ def main(_):
         ])
 
         print(model.summary())
+
+        # train, validation dataset split
+        train_ds, valid_ds = split_dataset(ds)
+        train_ds = train_ds.repeat().batch(FLAGS.batch_size)
+        valid_ds = valid_ds.repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'cnn2D':
         ds.dataset = ds.dataset.map(lambda x, y: (tf.expand_dims(x, 2), y))
 
         model = Sequential([
-            Conv2D(16, (3, 3), input_shape=(400, ds.mfcc_channels, 1), activation='tanh', padding='same'),
+            Conv2D(16, (3, 3), input_shape=(ds.timestamps, ds.mfcc_channels, 1), activation='tanh', padding='same'),
             AveragePooling2D(),
             Conv2D(32, (3, 3), activation='tanh', padding='same'),
             AveragePooling2D(),
@@ -202,6 +298,11 @@ def main(_):
         ])
 
         print(model.summary())
+
+        # train, validation dataset split
+        train_ds, valid_ds = split_dataset(ds)
+        train_ds = train_ds.repeat().batch(FLAGS.batch_size)
+        valid_ds = valid_ds.repeat().batch(FLAGS.batch_size)
     else:
         raise ValueError("Unknown model", FLAGS.model)
 
@@ -221,8 +322,6 @@ def main(_):
         metrics=['sparse_categorical_accuracy', ],
     )
 
-    train_ds, valid_ds = split_dataset(ds)
-
     #FIXME: include early stopping and checkpointer
     #early_stopping = EarlyStopping(monitor='loss', min_delta=0, patience=3, verbose=1, mode='auto')
     #checkpointer = ModelCheckpoint(filepath='model.weights.best.hdf5', verbose=1, save_best_only=True)
@@ -236,10 +335,10 @@ def main(_):
     #          validation_steps=int(ds.n_samples * 0.25) // FLAGS.batch_size)
 
     history = model.fit(
-        train_ds.repeat().batch(FLAGS.batch_size),
+        train_ds,
         epochs=FLAGS.epochs, verbose=1,
         steps_per_epoch=int(ds.n_samples * 0.75) // FLAGS.batch_size,
-        validation_data=valid_ds.repeat().batch(FLAGS.batch_size),
+        validation_data=valid_ds,
         validation_freq=FLAGS.print_every,
         validation_steps=int(ds.n_samples * 0.25) // FLAGS.batch_size,
         #callbacks=[early_stopping, checkpointer, reduce_learning_rate],
@@ -250,7 +349,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--model',
         type=str,
-        default='cnn2D',
+        default='cnn1D',
         help="""\
       Model to train: lstm, bilstm, cnn1D, cnn2D, cnn2D_inc, 
       """)
@@ -284,7 +383,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--batch_size',
         type=int,
-        default=256,
+        default=128,
         help='How many items to train with at once', )
     parser.add_argument(
         '--summaries_dir',
