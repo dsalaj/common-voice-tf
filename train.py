@@ -35,7 +35,7 @@ DEBUG_DATASET = False
 # TODO: EMBEDDING_MASKING will only work with lstm and bilstm networks
 # TODO: NORMAL will work with cnn1D and cnn2D networks
 # TODO: RAGGED is not supported for neither lstm, bilstm, cnn1D, cnn2D, here is only for reference
-TYPE = DatasetProcessingType.PADDING_MASKING
+TYPE = DatasetProcessingType.NORMAL
 
 class OfflineCommonVoiceDataset:
     def __init__(self):
@@ -184,13 +184,24 @@ def main(_):
                 ds.timestamps,
                 ds.mfcc_channels),
             return_sequences=False)
-        model = Sequential([
-            tf.keras.layers.Masking(mask_value=0.,
-                                    input_shape=(ds.timestamps, ds.mfcc_channels)),
-            cell,
-            # tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.Dense(len(ds.lang_labels)),
-        ])
+
+        if TYPE == DatasetProcessingType.PADDING_MASKING:
+            model = Sequential([
+                tf.keras.layers.Masking(mask_value=0.,
+                                        input_shape=(ds.timestamps, ds.mfcc_channels)),
+                cell,
+                # tf.keras.layers.BatchNormalization(),
+                tf.keras.layers.Dense(len(ds.lang_labels)),
+            ])
+        elif TYPE == DatasetProcessingType.NORMAL:
+            model = Sequential([
+                cell,
+                # tf.keras.layers.BatchNormalization(),
+                tf.keras.layers.Dense(len(ds.lang_labels)),
+            ])
+        else:
+            raise NotImplementedError("Type not supported!")
+
         print(model.summary())
 
         # call padded_batch on the dataset to created batched samples padded by zeros
@@ -198,9 +209,13 @@ def main(_):
         # and [] (scalar dimension) for labels
         # train, validation dataset split
         train_ds, valid_ds = split_dataset(ds)
-        train_ds = train_ds.repeat().padded_batch(batch_size=FLAGS.batch_size, padded_shapes=([None, ds.mfcc_channels], []))
-        valid_ds = valid_ds.repeat().padded_batch(batch_size=FLAGS.batch_size,
+        if TYPE == DatasetProcessingType.PADDING_MASKING:
+            train_ds = train_ds.repeat().padded_batch(batch_size=FLAGS.batch_size, padded_shapes=([None, ds.mfcc_channels], []))
+            valid_ds = valid_ds.repeat().padded_batch(batch_size=FLAGS.batch_size,
                                                   padded_shapes=([None, ds.mfcc_channels], []))
+        elif TYPE == DatasetProcessingType.NORMAL:
+            train_ds = train_ds.repeat().batch(FLAGS.batch_size)
+            valid_ds = valid_ds.repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'bilstm':
         cell = Bidirectional(LSTM(
             FLAGS.n_hidden,
@@ -210,13 +225,25 @@ def main(_):
                 ds.timestamps,  # FIXME: 4s clips for now
                 ds.mfcc_channels),
             return_sequences=False))
-        model = Sequential([
-            tf.keras.layers.Masking(mask_value=0.,
-                                    input_shape=(ds.timestamps, ds.mfcc_channels)),
-            cell,
-            # tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.Dense(len(ds.lang_labels)),
-        ])
+
+
+        if TYPE == DatasetProcessingType.PADDING_MASKING:
+            model = Sequential([
+                tf.keras.layers.Masking(mask_value=0.,
+                                        input_shape=(ds.timestamps, ds.mfcc_channels)),
+                cell,
+                # tf.keras.layers.BatchNormalization(),
+                tf.keras.layers.Dense(len(ds.lang_labels)),
+            ])
+        elif TYPE == DatasetProcessingType.NORMAL:
+            model = Sequential([
+                cell,
+                # tf.keras.layers.BatchNormalization(),
+                tf.keras.layers.Dense(len(ds.lang_labels)),
+            ])
+        else:
+            raise NotImplementedError("Type not supported!")
+
         print(model.summary())
 
         # call padded_batch on the dataset to created batched samples padded by zeros
@@ -224,10 +251,14 @@ def main(_):
         # and [] (scalar dimension) for labels
         # train, validation dataset split
         train_ds, valid_ds = split_dataset(ds)
-        train_ds = train_ds.repeat().padded_batch(batch_size=FLAGS.batch_size,
-                                                  padded_shapes=([None, ds.mfcc_channels], []))
-        valid_ds = valid_ds.repeat().padded_batch(batch_size=FLAGS.batch_size,
-                                                  padded_shapes=([None, ds.mfcc_channels], []))
+        if TYPE == DatasetProcessingType.PADDING_MASKING:
+            train_ds = train_ds.repeat().padded_batch(batch_size=FLAGS.batch_size,
+                                                      padded_shapes=([None, ds.mfcc_channels], []))
+            valid_ds = valid_ds.repeat().padded_batch(batch_size=FLAGS.batch_size,
+                                                      padded_shapes=([None, ds.mfcc_channels], []))
+        elif TYPE == DatasetProcessingType.NORMAL:
+            train_ds = train_ds.repeat().batch(FLAGS.batch_size)
+            valid_ds = valid_ds.repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'cnn2D_inc':
         #TODO: try cnns created for text classification
         ds.dataset = ds.dataset.map(lambda x, y: (tf.expand_dims(x, 2), y))
