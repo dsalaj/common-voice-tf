@@ -35,7 +35,7 @@ DEBUG_DATASET = False
 # TODO: EMBEDDING_MASKING will only work with lstm and bilstm networks
 # TODO: NORMAL will work with cnn1D and cnn2D networks
 # TODO: RAGGED is not supported for neither lstm, bilstm, cnn1D, cnn2D, here is only for reference
-TYPE = DatasetProcessingType.NORMAL
+TYPE = DatasetProcessingType.PADDING_MASKING
 
 class OfflineCommonVoiceDataset:
     def __init__(self):
@@ -169,17 +169,17 @@ def split_dataset(dataset):
     valid_ds = dataset.filter(filter_test)
     valid_ds = valid_ds.map(remove_test_flag)
 
-    n_valid_samples = 0
-    for _, labels in valid_ds.batch(1000):
-         n_valid_samples += labels.shape[0]
-    print("Validation set size:", n_valid_samples)  # 25867
+    #n_valid_samples = 0
+    #for _, labels in valid_ds.batch(1000):
+    #     n_valid_samples += labels.shape[0]
+    #print("Validation set size:", n_valid_samples)  #
 
-    n_train_samples = 0
-    for _, labels in train_ds.batch(1000):
-         n_train_samples += labels.shape[0]
-    print("Train set size:", n_train_samples)  # 139969
+    #n_train_samples = 0
+    #for _, labels in train_ds.batch(1000):
+    #     n_train_samples += labels.shape[0]
+    #print("Train set size:", n_train_samples)  # 139969
 
-    return train_ds, n_train_samples, valid_ds, n_valid_samples
+    return train_ds, 139969, valid_ds, 25867
 
 
 def main(_):
@@ -378,7 +378,7 @@ def main(_):
     model.compile(
         loss=loss,
         # TODO: try Nadam(lr=5e-3)
-        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=5e-4),
         metrics=['sparse_categorical_accuracy', ],
     )
 
