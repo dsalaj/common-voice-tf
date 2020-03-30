@@ -58,39 +58,52 @@ class OfflineCommonVoiceDataset:
                 def process(self, ds_file):
                     raise NotImplementedError
 
-                def filter_short(self, feature, label):
+                def filter_short(self, feature, label, is_test):
                     return tf.greater(tf.shape(feature)[0], 100)
 
-                def repeat_short(self, feature, label):
+                def repeat_short(self, feature, label, is_test):
                     repf = tf.tile(feature, tf.constant([4, 1], tf.int32))
                     trimed = repf[:self.timestamps]  # FIXME: 4s clips for now
-                    return trimed, label
+                    return trimed, label, is_test
 
                 def parse_normal(self, serialized):
+
                     parsed_example = tf.io.parse_single_example(
                         serialized=serialized,
                         features={'mfcc': tf.io.VarLenFeature(tf.float32),
-                                  'label': tf.io.FixedLenFeature([1], tf.string)})
+                                  'label': tf.io.FixedLenFeature([1], tf.string),
+                                  'age': tf.io.FixedLenFeature([1], tf.string),
+                                  'gender': tf.io.FixedLenFeature([1], tf.string),
+                                  'test': tf.io.FixedLenFeature([1], tf.int64),
+                                  }
+                    )
 
                     features = tf.reshape(tf.sparse.to_dense(parsed_example['mfcc']), (self.mfcc_channels, -1))
                     features = tf.transpose(features)
 
                     label = parsed_example['label'][0]  # convert to (time, channels)
                     label_idx = tf.argmax(tf.cast(tf.equal(lang_labels, label), tf.int32))
-                    return features, label_idx
+                    is_test = tf.cast(parsed_example['test'][0], tf.bool)
+                    return features, label_idx, is_test
 
                 def parse_ragged(self, serialized):
                     parsed_example = tf.io.parse_single_example(
                         serialized=serialized,
                         features={'mfcc': tf.io.VarLenFeature(tf.float32),
-                                  'label': tf.io.FixedLenFeature([1], tf.string)})
+                                  'label': tf.io.FixedLenFeature([1], tf.string),
+                                  'age': tf.io.FixedLenFeature([1], tf.string),
+                                  'gender': tf.io.FixedLenFeature([1], tf.string),
+                                  'test': tf.io.FixedLenFeature([1], tf.int64),
+                                  }
+                    )
 
                     features = tf.RaggedTensor.from_row_lengths(parsed_example['mfcc'].values,
                                                                 row_lengths=[len(parsed_example['mfcc'].values)])
 
                     label = parsed_example['label'][0]  # convert to (time, channels)
                     label_idx = tf.argmax(tf.cast(tf.equal(lang_labels, label), tf.int32))
-                    return features, label_idx
+                    is_test = tf.cast(parsed_example['test'][0], tf.bool)
+                    return features, label_idx, is_test
 
             class PaddingMaskingProcessing(DatasetProcessing):
 
@@ -122,6 +135,20 @@ class OfflineCommonVoiceDataset:
                         return PaddingMaskingProcessing(mfcc_channels, timestamps).process(ds_file)
 
             ds_file = ProcessingFactory.get_processor(self.mfcc_channels, self.timestamps,  ds_file, TYPE)
+            #n_train = 0
+            #n_test = 0
+            #for _, _, is_test in ds_file.batch(1):
+            #     if is_test.numpy():
+            #         n_test += 1
+            #     else:
+            #         n_train += 1
+            #print(label, "train", n_train, "test", n_test)
+            # > it train 47014 test 8951
+            # > nl train 21247 test 1698
+            # > pt train 18068 test 4023
+            # > ru train 41639 test 6299
+            # > zh-CN train 11998 test 4896
+
             list_ds.append(ds_file)
 
         self.dataset = tf.data.experimental.sample_from_datasets(list_ds)
@@ -129,31 +156,30 @@ class OfflineCommonVoiceDataset:
         self.n_samples = n_samples
 
 
-def split_dataset(ds, version=1):
-    if version == 1:
-        train_ds = ds.dataset.shard(num_shards=4, index=0)
-        train_ds.concatenate(ds.dataset.shard(num_shards=4, index=1))
-        train_ds.concatenate(ds.dataset.shard(num_shards=4, index=2))
-        valid_ds = ds.dataset.shard(num_shards=4, index=3)
-        return train_ds, valid_ds
+def split_dataset(dataset):
+    def filter_test(feature, label, is_test):
+        return is_test
+    def filter_train(feature, label, is_test):
+        return not is_test
+    def remove_test_flag(feature, label, is_test):
+        return feature, label
 
-    elif version == 2:
-        def is_val(x, y):
-            return x % 20 == 0
+    train_ds = dataset.filter(filter_train)
+    train_ds = train_ds.map(remove_test_flag)
+    valid_ds = dataset.filter(filter_test)
+    valid_ds = valid_ds.map(remove_test_flag)
 
-        def is_train(x, y):
-            return not is_val(x, y)
+    n_valid_samples = 0
+    for _, labels in valid_ds.batch(1000):
+         n_valid_samples += labels.shape[0]
+    print("Validation set size:", n_valid_samples)  # 25867
 
-        recover = lambda x, y: y
+    n_train_samples = 0
+    for _, labels in train_ds.batch(1000):
+         n_train_samples += labels.shape[0]
+    print("Train set size:", n_train_samples)  # 139969
 
-        train_ds = ds.dataset.enumerate().filter(is_train).map(recover)
-        valid_ds = ds.dataset.enumerate().filter(is_val).map(recover)
-        return train_ds, valid_ds
-
-    elif version == 3:
-        train_ds = ds.dataset.take(ds.n_samples - 1000)
-        valid_ds = ds.dataset.skip(ds.n_samples - 1000)
-        return train_ds, valid_ds
+    return train_ds, n_train_samples, valid_ds, n_valid_samples
 
 
 def main(_):
@@ -167,11 +193,12 @@ def main(_):
         # PREVIEW DATA SHAPES
         print(ds.dataset)
         count = {i: 0 for i in range(len(ds.lang_labels))}
-        for features, labels in ds.dataset.take(FLAGS.batch_size):
-            print("features", features.shape, "labels", labels.numpy())
+        for features, labels, is_test in ds.dataset.batch(1):
+            print("features", features.shape, "labels", labels.numpy(), "test", is_test)
+            print("min", np.min(features), "max", np.max(features))
+            for i in range(features.shape[1]):
+                print(i, "min", np.min(features[:, i]), "max", np.max(features[:, i]))
             count[labels.numpy()] += 1
-            # print("features", type(features), "labels", type(labels))
-            # print("features", features.numpy().shape, "labels", labels.numpy())
         print(count)
         exit()
 
@@ -189,12 +216,14 @@ def main(_):
             model = Sequential([
                 tf.keras.layers.Masking(mask_value=0.,
                                         input_shape=(ds.timestamps, ds.mfcc_channels)),
+                #tf.keras.layers.GaussianNoise(FLAGS.noise_std),
                 cell,
                 # tf.keras.layers.BatchNormalization(),
                 tf.keras.layers.Dense(len(ds.lang_labels)),
             ])
         elif TYPE == DatasetProcessingType.NORMAL:
             model = Sequential([
+                tf.keras.layers.GaussianNoise(FLAGS.noise_std),
                 cell,
                 # tf.keras.layers.BatchNormalization(),
                 tf.keras.layers.Dense(len(ds.lang_labels)),
@@ -202,20 +231,19 @@ def main(_):
         else:
             raise NotImplementedError("Type not supported!")
 
-        print(model.summary())
-
+        #print(model.summary())
         # call padded_batch on the dataset to created batched samples padded by zeros
         # padded_shapes represent the dimension of the features [None, ds.mfcc_channels] (variable dimension, ds.mfcc_channels),
         # and [] (scalar dimension) for labels
         # train, validation dataset split
-        train_ds, valid_ds = split_dataset(ds)
+        train_ds, n_train_samples, valid_ds, n_valid_samples = split_dataset(ds.dataset)
         if TYPE == DatasetProcessingType.PADDING_MASKING:
-            train_ds = train_ds.repeat().padded_batch(batch_size=FLAGS.batch_size, padded_shapes=([None, ds.mfcc_channels], []))
-            valid_ds = valid_ds.repeat().padded_batch(batch_size=FLAGS.batch_size,
+            train_ds = train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().padded_batch(batch_size=FLAGS.batch_size, padded_shapes=([None, ds.mfcc_channels], []))
+            valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().padded_batch(batch_size=FLAGS.batch_size,
                                                   padded_shapes=([None, ds.mfcc_channels], []))
         elif TYPE == DatasetProcessingType.NORMAL:
-            train_ds = train_ds.repeat().batch(FLAGS.batch_size)
-            valid_ds = valid_ds.repeat().batch(FLAGS.batch_size)
+            train_ds = train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().batch(FLAGS.batch_size)
+            valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'bilstm':
         cell = Bidirectional(LSTM(
             FLAGS.n_hidden,
@@ -250,15 +278,16 @@ def main(_):
         # padded_shapes represent the dimension of the features [None, ds.mfcc_channels] (variable dimension, ds.mfcc_channels),
         # and [] (scalar dimension) for labels
         # train, validation dataset split
-        train_ds, valid_ds = split_dataset(ds)
+        train_ds, n_train_samples, valid_ds, n_valid_samples = split_dataset(ds.dataset)
         if TYPE == DatasetProcessingType.PADDING_MASKING:
-            train_ds = train_ds.repeat().padded_batch(batch_size=FLAGS.batch_size,
+            train_ds = train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().padded_batch(batch_size=FLAGS.batch_size,
                                                       padded_shapes=([None, ds.mfcc_channels], []))
-            valid_ds = valid_ds.repeat().padded_batch(batch_size=FLAGS.batch_size,
+            valid_ds =valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().padded_batch(batch_size=FLAGS.batch_size,
                                                       padded_shapes=([None, ds.mfcc_channels], []))
         elif TYPE == DatasetProcessingType.NORMAL:
-            train_ds = train_ds.repeat().batch(FLAGS.batch_size)
-            valid_ds = valid_ds.repeat().batch(FLAGS.batch_size)
+            train_ds = train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().batch(
+                FLAGS.batch_size)
+            valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'cnn2D_inc':
         #TODO: try cnns created for text classification
         ds.dataset = ds.dataset.map(lambda x, y: (tf.expand_dims(x, 2), y))
@@ -281,9 +310,9 @@ def main(_):
         print(model.summary())
 
         # train, validation dataset split
-        train_ds, valid_ds = split_dataset(ds)
-        train_ds = train_ds.repeat().batch(FLAGS.batch_size)
-        valid_ds = valid_ds.repeat().batch(FLAGS.batch_size)
+        train_ds, n_train_samples, valid_ds, n_valid_samples = split_dataset(ds.dataset)
+        train_ds = train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().batch(FLAGS.batch_size)
+        valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'cnn1D':
 
         ds.dataset = ds.dataset.map(lambda x, y: (tf.reshape(x, [-1]), y))
@@ -307,9 +336,9 @@ def main(_):
         print(model.summary())
 
         # train, validation dataset split
-        train_ds, valid_ds = split_dataset(ds)
-        train_ds = train_ds.repeat().batch(FLAGS.batch_size)
-        valid_ds = valid_ds.repeat().batch(FLAGS.batch_size)
+        train_ds, n_train_samples, valid_ds, n_valid_samples = split_dataset(ds.dataset)
+        train_ds = train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().batch(FLAGS.batch_size)
+        valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'cnn2D':
         ds.dataset = ds.dataset.map(lambda x, y: (tf.expand_dims(x, 2), y))
 
@@ -331,9 +360,9 @@ def main(_):
         print(model.summary())
 
         # train, validation dataset split
-        train_ds, valid_ds = split_dataset(ds)
-        train_ds = train_ds.repeat().batch(FLAGS.batch_size)
-        valid_ds = valid_ds.repeat().batch(FLAGS.batch_size)
+        train_ds, n_train_samples, valid_ds, n_valid_samples = split_dataset(ds.dataset)
+        train_ds = train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().batch(FLAGS.batch_size)
+        valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size)
     else:
         raise ValueError("Unknown model", FLAGS.model)
 
@@ -349,7 +378,7 @@ def main(_):
     model.compile(
         loss=loss,
         # TODO: try Nadam(lr=5e-3)
-        optimizer=tf.keras.optimizers.Adam(learning_rate=5e-4),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
         metrics=['sparse_categorical_accuracy', ],
     )
 
@@ -365,14 +394,25 @@ def main(_):
     #          validation_freq=FLAGS.print_every,
     #          validation_steps=int(ds.n_samples * 0.25) // FLAGS.batch_size)
 
+    # train_ds, n_train_samples, valid_ds, n_valid_samples = split_dataset(ds.dataset)
+    # NOTE: Given that the tf.data.experimental.sample_from_datasets draws the samples without replacement,
+    # we do not want to define the epoch or validation steps by the number of actual samples as this would
+    # again lead to an unbalanced data for training/validation.
+    # Official guide suggests defining the number of steps per "epoch" as the number of required batches
+    # required to see each sample, of the class with smallest number of examples, once. We will use this
+    # convention.
+    # https://www.tensorflow.org/tutorials/structured_data/imbalanced_data#using_tfdata
+    # Class nl has the least number of test samples (1698) so we use this to define our validation set size
+    # Class zh-CN has the least number of train samples (11998) so we use this to define training set size
+
     history = model.fit(
         train_ds,
         epochs=FLAGS.epochs, verbose=1,
-        steps_per_epoch=int(ds.n_samples * 0.75) // FLAGS.batch_size,
+        steps_per_epoch=(11998 // FLAGS.batch_size) + 1,
         validation_data=valid_ds,
         validation_freq=FLAGS.print_every,
-        validation_steps=int(ds.n_samples * 0.25) // FLAGS.batch_size,
-        #callbacks=[early_stopping, checkpointer, reduce_learning_rate],
+        validation_steps=(1698 // FLAGS.batch_size) + 1,
+        # callbacks=callbacks,
     )
 
 if __name__ == '__main__':
@@ -392,24 +432,17 @@ if __name__ == '__main__':
       Where to download the speech training data to.
       """)
     parser.add_argument(
-        '--background_volume',
+        '--noise_std',
         type=float,
-        default=0.1,
+        default=0.0,
         help="""\
-      How loud the background noise should be, between 0 and 1. FIXME: not implemented
-      """)
-    parser.add_argument(
-        '--background_frequency',
-        type=float,
-        default=0.8,
-        help="""\
-      How many of the training samples have background noise mixed in. FIXME: not implemented
+      Std of the noise to be added during training
       """)
 
     parser.add_argument(
         '--epochs',
         type=int,
-        default=500,
+        default=100,
         help='How many epoch of training to perform', )
     parser.add_argument(
         '--batch_size',
