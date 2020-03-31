@@ -35,7 +35,7 @@ DEBUG_DATASET = False
 # TODO: EMBEDDING_MASKING will only work with lstm and bilstm networks
 # TODO: NORMAL will work with cnn1D and cnn2D networks
 # TODO: RAGGED is not supported for neither lstm, bilstm, cnn1D, cnn2D, here is only for reference
-TYPE = DatasetProcessingType.PADDING_MASKING
+TYPE = DatasetProcessingType.NORMAL
 
 class OfflineCommonVoiceDataset:
     def __init__(self):
@@ -290,7 +290,7 @@ def main(_):
             valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'cnn2D_inc':
         #TODO: try cnns created for text classification
-        ds.dataset = ds.dataset.map(lambda x, y: (tf.expand_dims(x, 2), y))
+        ds.dataset = ds.dataset.map(lambda x, y, is_test: (tf.expand_dims(x, 2), y, is_test))
         inp = Input(shape=(ds.timestamps, ds.mfcc_channels, 1))
         filter_sizes = [2, 3, 4, 5]
         num_filters = 36
@@ -315,8 +315,8 @@ def main(_):
         valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'cnn1D':
 
-        ds.dataset = ds.dataset.map(lambda x, y: (tf.reshape(x, [-1]), y))
-        ds.dataset = ds.dataset.map(lambda x, y: (tf.expand_dims(x, 1), y))
+        ds.dataset = ds.dataset.map(lambda x, y, is_test: (tf.reshape(x, [-1]), y, is_test))
+        ds.dataset = ds.dataset.map(lambda x, y, is_test: (tf.expand_dims(x, 1), y, is_test))
 
         model = Sequential([
             Conv1D(16, input_shape=(ds.mfcc_channels*ds.timestamps, 1), kernel_size=3, activation='tanh'),
@@ -340,7 +340,7 @@ def main(_):
         train_ds = train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().batch(FLAGS.batch_size)
         valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'cnn2D':
-        ds.dataset = ds.dataset.map(lambda x, y: (tf.expand_dims(x, 2), y))
+        ds.dataset = ds.dataset.map(lambda x, y, is_test: (tf.expand_dims(x, 2), y, is_test))
 
         model = Sequential([
             Conv2D(16, (3, 3), input_shape=(ds.timestamps, ds.mfcc_channels, 1), activation='tanh', padding='same'),
@@ -420,7 +420,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--model',
         type=str,
-        default='lstm',
+        default='cnn2D',
         help="""\
       Model to train: lstm, bilstm, cnn1D, cnn2D, cnn2D_inc, 
       """)
