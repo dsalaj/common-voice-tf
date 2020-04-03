@@ -307,8 +307,8 @@ def main(_):
             valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().padded_batch(batch_size=FLAGS.batch_size,
                                                   padded_shapes=([None, ds.mfcc_channels], []))
         elif TYPE == DatasetProcessingType.NORMAL:
-            train_ds = train_ds.shuffle(139969, reshuffle_each_iteration=True).take(11998).repeat().batch(FLAGS.batch_size)
-            valid_ds = valid_ds.shuffle(25867, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size)
+            train_ds = train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().batch(FLAGS.batch_size)
+            valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'bilstm':
         cell = Bidirectional(LSTM(
             FLAGS.n_hidden,
@@ -453,7 +453,7 @@ def main(_):
     #reduce_learning_rate = ReduceLROnPlateau(monitor='loss', factor=0.9,
     #                          patience=3, min_lr=1e-3)
 
-    plotter = ConfusionMatrixCallback(train_dataset=train_ds, validation_data=valid_ds, validation_data_size=1698, train_data_size=11998, batch_size=FLAGS.batch_size, classes=ds.lang_labels)
+    conf_matrix_callback = ConfusionMatrixCallback(train_dataset=train_ds, validation_data=valid_ds, validation_data_size=1698, train_data_size=11998, batch_size=FLAGS.batch_size, classes=ds.lang_labels)
     #TODO: try autokeras
     #model.fit(train_ds.batch(FLAGS.batch_size) ,epochs=FLAGS.epochs, verbose=2,
     #          steps_per_epoch=int(ds.n_samples * 0.75) // FLAGS.batch_size,
@@ -478,7 +478,7 @@ def main(_):
         validation_data=valid_ds,
         validation_freq=FLAGS.print_every,
         validation_steps=(1698 // FLAGS.batch_size) + 1,
-        callbacks=[plotter],
+        callbacks=[conf_matrix_callback],
     )
 
 if __name__ == '__main__':
