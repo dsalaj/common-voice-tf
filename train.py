@@ -3,11 +3,13 @@ from __future__ import division
 from __future__ import print_function
 
 import argparse
+import itertools
 import os.path
 import sys
 import json
 from datetime import datetime
 import abc
+import time
 
 import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
@@ -15,6 +17,8 @@ import tensorflow as tf
 
 from tensorflow.python.platform import gfile
 from dataset import CommonVoiceDataset
+import matplotlib.pyplot as plt
+from confusion_matrix_callback import ConfusionMatrixCallback
 
 from tensorflow.keras import Input
 from tensorflow.keras.layers import Conv2D, Activation, MaxPooling2D, Flatten, Dense, Dropout, Conv1D, MaxPool1D, AveragePooling2D, MaxPooling1D, LSTM, Bidirectional
@@ -41,7 +45,7 @@ class OfflineCommonVoiceDataset:
     def __init__(self):
         lang_labels = ['it', 'nl', 'pt', 'ru', 'zh-CN']
         self.mfcc_channels = 20
-        self.timestamps = 400 # FIXME: 4s clips for now
+        self.timestamps = 600 # FIXME: 4s clips for now
         n_samples = len(lang_labels) * 10000
         list_ds = []
         for label in lang_labels:
@@ -62,7 +66,7 @@ class OfflineCommonVoiceDataset:
                     return tf.greater(tf.shape(feature)[0], 100)
 
                 def repeat_short(self, feature, label, is_test):
-                    repf = tf.tile(feature, tf.constant([4, 1], tf.int32))
+                    repf = tf.tile(feature, tf.constant([6, 1], tf.int32))
                     trimed = repf[:self.timestamps]  # FIXME: 4s clips for now
                     return trimed, label, is_test
 
@@ -155,6 +159,67 @@ class OfflineCommonVoiceDataset:
         self.lang_labels = lang_labels
         self.n_samples = n_samples
 
+"""
+import io
+
+class ConfusionMatrixCallback(tf.keras.callbacks.Callback):
+    def __init__(self, validation_data, classes, normalize=False, cmap=plt.cm.Blues, title='Confusion Matrix'):
+        self.title = title
+        self.classes = classes
+        self.normalize = normalize
+        self.cmap = cmap
+        self.validation_data = validation_data
+        plt.ion()
+        plt.figure()
+        plt.title(self.title)
+
+        suffix = time.strftime('%Y-%m-%d--%H-%M-%S')
+        self.writer = tf.summary.create_file_writer(logdir='tensorboard/{}'.format(suffix) + '/cnf_matrices/')
+
+    def on_epoch_end(self, epoch, logs=None):
+        plt.clf()
+        for features, labels in self.validation_data.batch((1698 // FLAGS.batch_size) + 1):
+
+            features_shape = features.shape  # should be 4-dimensional
+            features = tf.reshape(features,
+                                  shape=(features_shape[0] * features_shape[1], features_shape[2], features_shape[3]))
+            labels_shape = labels.shape  # should be 2-dimensional
+            labels = tf.reshape(labels, shape=(labels_shape[0] * labels_shape[1],))
+
+            pred = self.model.predict(features)
+            max_pred = np.argmax(pred, axis=1)
+            cnf_mat = tf.math.confusion_matrix(max_pred, labels).numpy()
+
+            if self.normalize:
+                cnf_mat = cnf_mat.astype('float') / cnf_mat.sum(axis=1)[:, np.newaxis]
+
+            thresh = cnf_mat.max() / 2.
+            for i, j in itertools.product(range(cnf_mat.shape[0]), range(cnf_mat.shape[1])):
+                plt.text(j, i, cnf_mat[i, j],
+                         horizontalalignment="center",
+                         color="white" if cnf_mat[i, j] > thresh else "black")
+
+            plt.imshow(cnf_mat, interpolation='nearest', cmap=self.cmap)
+            tick_marks = np.arange(len(self.classes))
+            plt.xticks(tick_marks, self.classes, rotation=45)
+            plt.yticks(tick_marks, self.classes)
+
+            plt.colorbar()
+            plt.tight_layout()
+            plt.ylabel('True label')
+            plt.xlabel('Predicted label')
+            buffer = io.BytesIO()
+            plt.savefig(buffer, format='png')
+            buffer.seek(0)
+
+            tf_image = tf.image.decode_png(buffer.getvalue(), channels=4)
+            image = tf.expand_dims(tf_image, 0)
+
+            with self.writer.as_default():
+                tf.summary.image("conf_matrix/{}".format(str(epoch)), image, step=epoch)
+
+            break
+"""
 
 def split_dataset(dataset):
     def filter_test(feature, label, is_test):
@@ -194,11 +259,11 @@ def main(_):
         print(ds.dataset)
         count = {i: 0 for i in range(len(ds.lang_labels))}
         for features, labels, is_test in ds.dataset.batch(1):
-            print("features", features.shape, "labels", labels.numpy(), "test", is_test)
-            print("min", np.min(features), "max", np.max(features))
-            for i in range(features.shape[1]):
-                print(i, "min", np.min(features[:, i]), "max", np.max(features[:, i]))
-            count[labels.numpy()] += 1
+            #print("features", features.shape, "labels", labels.numpy()[0], "test", is_test)
+            #print("min", np.min(features), "max", np.max(features))
+            #for i in range(features.shape[1]):
+            #    print(i, "min", np.min(features[:, i]), "max", np.max(features[:, i]))
+            count[labels.numpy()[0]] += 1
         print(count)
         exit()
 
@@ -219,14 +284,14 @@ def main(_):
                 #tf.keras.layers.GaussianNoise(FLAGS.noise_std),
                 cell,
                 # tf.keras.layers.BatchNormalization(),
-                tf.keras.layers.Dense(len(ds.lang_labels)),
+                tf.keras.layers.Dense(len(ds.lang_labels), activation='softmax'),
             ])
         elif TYPE == DatasetProcessingType.NORMAL:
             model = Sequential([
                 tf.keras.layers.GaussianNoise(FLAGS.noise_std),
                 cell,
                 # tf.keras.layers.BatchNormalization(),
-                tf.keras.layers.Dense(len(ds.lang_labels)),
+                tf.keras.layers.Dense(len(ds.lang_labels), activation='softmax'),
             ])
         else:
             raise NotImplementedError("Type not supported!")
@@ -242,8 +307,8 @@ def main(_):
             valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().padded_batch(batch_size=FLAGS.batch_size,
                                                   padded_shapes=([None, ds.mfcc_channels], []))
         elif TYPE == DatasetProcessingType.NORMAL:
-            train_ds = train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().batch(FLAGS.batch_size)
-            valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size)
+            train_ds = train_ds.shuffle(139969, reshuffle_each_iteration=True).take(11998).repeat().batch(FLAGS.batch_size)
+            valid_ds = valid_ds.shuffle(25867, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'bilstm':
         cell = Bidirectional(LSTM(
             FLAGS.n_hidden,
@@ -378,7 +443,7 @@ def main(_):
     model.compile(
         loss=loss,
         # TODO: try Nadam(lr=5e-3)
-        optimizer=tf.keras.optimizers.Adam(learning_rate=5e-4),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
         metrics=['sparse_categorical_accuracy', ],
     )
 
@@ -388,6 +453,7 @@ def main(_):
     #reduce_learning_rate = ReduceLROnPlateau(monitor='loss', factor=0.9,
     #                          patience=3, min_lr=1e-3)
 
+    plotter = ConfusionMatrixCallback(train_dataset=train_ds, validation_data=valid_ds, validation_data_size=1698, train_data_size=11998, batch_size=FLAGS.batch_size, classes=ds.lang_labels)
     #TODO: try autokeras
     #model.fit(train_ds.batch(FLAGS.batch_size) ,epochs=FLAGS.epochs, verbose=2,
     #          steps_per_epoch=int(ds.n_samples * 0.75) // FLAGS.batch_size,
@@ -412,7 +478,7 @@ def main(_):
         validation_data=valid_ds,
         validation_freq=FLAGS.print_every,
         validation_steps=(1698 // FLAGS.batch_size) + 1,
-        # callbacks=callbacks,
+        callbacks=[plotter],
     )
 
 if __name__ == '__main__':
@@ -420,7 +486,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--model',
         type=str,
-        default='cnn2D',
+        default='lstm',
         help="""\
       Model to train: lstm, bilstm, cnn1D, cnn2D, cnn2D_inc, 
       """)
