@@ -24,12 +24,24 @@ FLAGS = None
 DEBUG_DATASET = False
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
+
+def ds_len(dataset):
+    return dataset.map(lambda x, y: 1).reduce(tf.constant(0), lambda x, _: x+1)
+
+
+def ds_oversample_to_size(dataset, size):
+    while ds_len(dataset) < tf.constant(size):
+        dataset = dataset.concatenate(dataset)
+    return dataset.take(size)
+
+
 class OfflineCommonVoiceDataset:
     def __init__(self):
         lang_labels = ['it', 'nl', 'pt', 'ru', 'zh-CN']
         self.mfcc_channels = 20
         n_samples = len(lang_labels) * 10000
         list_ds = []
+        valid_list_ds = []
         for label in lang_labels:
             file_path = os.path.join(FLAGS.data_dir, label, label + '.tfrecord')
             ds_file = tf.data.TFRecordDataset(filenames=[file_path])
@@ -71,14 +83,25 @@ class OfflineCommonVoiceDataset:
             #     else:
             #         n_train += 1
             # print(label, "train", n_train, "test", n_test)
-            # > it train 47017 test 8951
-            # > nl train 21247 test 1698
-            # > pt train 18067 test 4022
-            # > ru train 41640 test 6299
+            # > it    train 47017 test 8951
+            # > nl    train 21247 test 1698
+            # > pt    train 18067 test 4022
+            # > ru    train 41640 test 6299
             # > zh-CN train 11998 test 4897
-            list_ds.append(ds_file)
+            #list_ds.append(ds_file)
+            train_ds, _, valid_ds, _ = split_dataset(ds_file)
+            train_ds = ds_oversample_to_size(train_ds, 47017)
+            valid_ds = valid_ds.take(1698)  # undersampling to smallest language
 
-        self.dataset = tf.data.experimental.sample_from_datasets(list_ds)
+            train_ds_len = ds_len(train_ds)
+            valid_ds_len = ds_len(valid_ds)
+            print(label, train_ds_len, valid_ds_len)
+            list_ds.append(train_ds)
+            valid_list_ds.append(valid_ds)
+
+        # self.dataset = tf.data.experimental.sample_from_datasets(list_ds)
+        self.train_ds = tf.data.experimental.sample_from_datasets(list_ds)
+        self.valid_ds = tf.data.experimental.sample_from_datasets(valid_list_ds)
         self.lang_labels = lang_labels
         self.n_samples = n_samples
 
@@ -173,7 +196,8 @@ def main(_):
         metrics=['sparse_categorical_accuracy', ],
     )
 
-    train_ds, n_train_samples, valid_ds, n_valid_samples = split_dataset(ds.dataset)
+    # train_ds, n_train_samples, valid_ds, n_valid_samples = split_dataset(ds.dataset)
+
     # NOTE: Given that the tf.data.experimental.sample_from_datasets draws the samples without replacement,
     # we do not want to define the epoch or validation steps by the number of actual samples as this would
     # again lead to an unbalanced data for training/validation.
@@ -184,7 +208,14 @@ def main(_):
     # Class nl has the least number of test samples (1698) so we use this to define our validation set size
     # Class zh-CN has the least number of train samples (11998) so we use this to define training set size
 
-    eval_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).batch(1698)
+    # # Debug unbalanced sampling of datasets
+    # count = {l: 0 for l in range(len(ds.lang_labels))}
+    # for features, labels in ds.train_ds.batch(1):
+    #     count[labels.numpy()[0]] += 1
+    # print("Num. samples per label in training set:", count)
+    # exit()
+
+    eval_ds = ds.valid_ds.batch(1698 * len(ds.lang_labels))
 
     def log_confusion_matrix(epoch, logs):
         print("\nConfusion Matrix:")
@@ -198,12 +229,12 @@ def main(_):
     cm_callback = tf.keras.callbacks.LambdaCallback(on_epoch_end=log_confusion_matrix)
 
     history = model.fit(
-        train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().batch(FLAGS.batch_size),
+        ds.train_ds.repeat().batch(FLAGS.batch_size),
         epochs=FLAGS.epochs, verbose=1,
-        steps_per_epoch=(11998 // FLAGS.batch_size) + 1,
-        validation_data=valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size),
+        steps_per_epoch=((47017 * len(ds.lang_labels)) // FLAGS.batch_size) + 1,
+        validation_data=ds.valid_ds.repeat().batch(FLAGS.batch_size),
         validation_freq=FLAGS.print_every,
-        validation_steps=(1698 // FLAGS.batch_size) + 1,
+        validation_steps=((1698 * len(ds.lang_labels)) // FLAGS.batch_size) + 1,
         callbacks=[cm_callback],
     )
 
