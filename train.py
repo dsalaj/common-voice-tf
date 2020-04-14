@@ -3,7 +3,7 @@ from __future__ import division
 from __future__ import print_function
 
 import argparse
-import os.path
+import os
 import sys
 import json
 from datetime import datetime
@@ -22,7 +22,7 @@ from tensorflow.keras.optimizers import Nadam
 
 FLAGS = None
 DEBUG_DATASET = False
-
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 class OfflineCommonVoiceDataset:
     def __init__(self):
@@ -184,6 +184,19 @@ def main(_):
     # Class nl has the least number of test samples (1698) so we use this to define our validation set size
     # Class zh-CN has the least number of train samples (11998) so we use this to define training set size
 
+    eval_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).batch(1698)
+
+    def log_confusion_matrix(epoch, logs):
+        print("\nConfusion Matrix:")
+        for features, labels in eval_ds:
+            val_pred = model.predict(features)
+            val_pred = np.argmax(val_pred, axis=1)
+            cm = tf.math.confusion_matrix(labels=labels, predictions=val_pred)
+            print(cm.numpy())
+
+    # Define the per-epoch callback.
+    cm_callback = tf.keras.callbacks.LambdaCallback(on_epoch_end=log_confusion_matrix)
+
     history = model.fit(
         train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().batch(FLAGS.batch_size),
         epochs=FLAGS.epochs, verbose=1,
@@ -191,7 +204,7 @@ def main(_):
         validation_data=valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size),
         validation_freq=FLAGS.print_every,
         validation_steps=(1698 // FLAGS.batch_size) + 1,
-        # callbacks=callbacks,
+        callbacks=[cm_callback],
     )
 
 
@@ -214,7 +227,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--noise_std',
         type=float,
-        default=0.0,
+        default=10.0,
         help="""\
       Std of the noise to be added during training
       """)
