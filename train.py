@@ -36,18 +36,29 @@ class DatasetProcessingType(Enum):
 
 FLAGS = None
 DEBUG_DATASET = False
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+
 # TODO: EMBEDDING_MASKING will only work with lstm and bilstm networks
 # TODO: NORMAL will work with cnn1D and cnn2D networks
 # TODO: RAGGED is not supported for neither lstm, bilstm, cnn1D, cnn2D, here is only for reference
 TYPE = DatasetProcessingType.NORMAL
 
+def ds_len(dataset):
+    return dataset.map(lambda x, y: 1).reduce(tf.constant(0), lambda x, _: x+1)
+
+def ds_oversample_to_size(dataset, size):
+    while ds_len(dataset) < tf.constant(size):
+        dataset = dataset.concatenate(dataset)
+    return dataset.take(size)
+
 class OfflineCommonVoiceDataset:
     def __init__(self):
         lang_labels = ['it', 'nl', 'pt', 'ru', 'zh-CN']
         self.mfcc_channels = 20
-        self.timestamps = 600 # FIXME: 4s clips for now
+        self.timestamps = 400 # FIXME: 4s clips for now
         n_samples = len(lang_labels) * 10000
         list_ds = []
+        valid_list_ds = []
         for label in lang_labels:
             file_path = os.path.join(FLAGS.data_dir, label, label + '.tfrecord')
             ds_file = tf.data.TFRecordDataset(filenames=[file_path])
@@ -66,7 +77,7 @@ class OfflineCommonVoiceDataset:
                     return tf.greater(tf.shape(feature)[0], 100)
 
                 def repeat_short(self, feature, label, is_test):
-                    repf = tf.tile(feature, tf.constant([6, 1], tf.int32))
+                    repf = tf.tile(feature, tf.constant([4, 1], tf.int32))
                     trimed = repf[:self.timestamps]  # FIXME: 4s clips for now
                     return trimed, label, is_test
 
@@ -152,74 +163,22 @@ class OfflineCommonVoiceDataset:
             # > pt train 18068 test 4023
             # > ru train 41639 test 6299
             # > zh-CN train 11998 test 4896
+            train_ds, _, valid_ds, _ = split_dataset(ds_file)
+            train_ds = ds_oversample_to_size(train_ds, 47017)
+            valid_ds = ds_oversample_to_size(valid_ds, 8951)
+            #valid_ds = valid_ds.take(1698)  # undersampling to smallest language
 
-            list_ds.append(ds_file)
+            train_ds_len = ds_len(train_ds)
+            valid_ds_len = ds_len(valid_ds)
+            print(label, train_ds_len, valid_ds_len)
+            list_ds.append(train_ds)
+            valid_list_ds.append(valid_ds)
 
-        self.dataset = tf.data.experimental.sample_from_datasets(list_ds)
+        #self.dataset = tf.data.experimental.sample_from_datasets(list_ds)
+        self.train_ds = tf.data.experimental.sample_from_datasets(list_ds)
+        self.valid_ds = tf.data.experimental.sample_from_datasets(valid_list_ds)
         self.lang_labels = lang_labels
         self.n_samples = n_samples
-
-"""
-import io
-
-class ConfusionMatrixCallback(tf.keras.callbacks.Callback):
-    def __init__(self, validation_data, classes, normalize=False, cmap=plt.cm.Blues, title='Confusion Matrix'):
-        self.title = title
-        self.classes = classes
-        self.normalize = normalize
-        self.cmap = cmap
-        self.validation_data = validation_data
-        plt.ion()
-        plt.figure()
-        plt.title(self.title)
-
-        suffix = time.strftime('%Y-%m-%d--%H-%M-%S')
-        self.writer = tf.summary.create_file_writer(logdir='tensorboard/{}'.format(suffix) + '/cnf_matrices/')
-
-    def on_epoch_end(self, epoch, logs=None):
-        plt.clf()
-        for features, labels in self.validation_data.batch((1698 // FLAGS.batch_size) + 1):
-
-            features_shape = features.shape  # should be 4-dimensional
-            features = tf.reshape(features,
-                                  shape=(features_shape[0] * features_shape[1], features_shape[2], features_shape[3]))
-            labels_shape = labels.shape  # should be 2-dimensional
-            labels = tf.reshape(labels, shape=(labels_shape[0] * labels_shape[1],))
-
-            pred = self.model.predict(features)
-            max_pred = np.argmax(pred, axis=1)
-            cnf_mat = tf.math.confusion_matrix(max_pred, labels).numpy()
-
-            if self.normalize:
-                cnf_mat = cnf_mat.astype('float') / cnf_mat.sum(axis=1)[:, np.newaxis]
-
-            thresh = cnf_mat.max() / 2.
-            for i, j in itertools.product(range(cnf_mat.shape[0]), range(cnf_mat.shape[1])):
-                plt.text(j, i, cnf_mat[i, j],
-                         horizontalalignment="center",
-                         color="white" if cnf_mat[i, j] > thresh else "black")
-
-            plt.imshow(cnf_mat, interpolation='nearest', cmap=self.cmap)
-            tick_marks = np.arange(len(self.classes))
-            plt.xticks(tick_marks, self.classes, rotation=45)
-            plt.yticks(tick_marks, self.classes)
-
-            plt.colorbar()
-            plt.tight_layout()
-            plt.ylabel('True label')
-            plt.xlabel('Predicted label')
-            buffer = io.BytesIO()
-            plt.savefig(buffer, format='png')
-            buffer.seek(0)
-
-            tf_image = tf.image.decode_png(buffer.getvalue(), channels=4)
-            image = tf.expand_dims(tf_image, 0)
-
-            with self.writer.as_default():
-                tf.summary.image("conf_matrix/{}".format(str(epoch)), image, step=epoch)
-
-            break
-"""
 
 def split_dataset(dataset):
     def filter_test(feature, label, is_test):
@@ -290,7 +249,7 @@ def main(_):
             model = Sequential([
                 tf.keras.layers.GaussianNoise(FLAGS.noise_std),
                 cell,
-                # tf.keras.layers.BatchNormalization(),
+                tf.keras.layers.BatchNormalization(),
                 tf.keras.layers.Dense(len(ds.lang_labels), activation='softmax'),
             ])
         else:
@@ -303,12 +262,12 @@ def main(_):
         # train, validation dataset split
         train_ds, n_train_samples, valid_ds, n_valid_samples = split_dataset(ds.dataset)
         if TYPE == DatasetProcessingType.PADDING_MASKING:
-            train_ds = train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().padded_batch(batch_size=FLAGS.batch_size, padded_shapes=([None, ds.mfcc_channels], []))
-            valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().padded_batch(batch_size=FLAGS.batch_size,
+            train_ds = ds.train_ds.repeat().padded_batch(batch_size=FLAGS.batch_size, padded_shapes=([None, ds.mfcc_channels], []))
+            valid_ds = ds.valid_ds.repeat().padded_batch(batch_size=FLAGS.batch_size,
                                                   padded_shapes=([None, ds.mfcc_channels], []))
         elif TYPE == DatasetProcessingType.NORMAL:
-            train_ds = train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().batch(FLAGS.batch_size)
-            valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size)
+            train_ds = ds.train_ds.repeat().batch(FLAGS.batch_size)
+            valid_ds = ds.valid_ds.repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'bilstm':
         cell = Bidirectional(LSTM(
             FLAGS.n_hidden,
@@ -345,14 +304,13 @@ def main(_):
         # train, validation dataset split
         train_ds, n_train_samples, valid_ds, n_valid_samples = split_dataset(ds.dataset)
         if TYPE == DatasetProcessingType.PADDING_MASKING:
-            train_ds = train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().padded_batch(batch_size=FLAGS.batch_size,
+            train_ds = ds.train_ds.repeat().padded_batch(batch_size=FLAGS.batch_size,
                                                       padded_shapes=([None, ds.mfcc_channels], []))
-            valid_ds =valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().padded_batch(batch_size=FLAGS.batch_size,
+            valid_ds = ds.valid_ds.repeat().padded_batch(batch_size=FLAGS.batch_size,
                                                       padded_shapes=([None, ds.mfcc_channels], []))
         elif TYPE == DatasetProcessingType.NORMAL:
-            train_ds = train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().batch(
-                FLAGS.batch_size)
-            valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size)
+            train_ds = ds.train_ds.repeat().batch(FLAGS.batch_size)
+            valid_ds = ds.valid_ds.repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'cnn2D_inc':
         #TODO: try cnns created for text classification
         ds.dataset = ds.dataset.map(lambda x, y, is_test: (tf.expand_dims(x, 2), y, is_test))
@@ -375,9 +333,8 @@ def main(_):
         print(model.summary())
 
         # train, validation dataset split
-        train_ds, n_train_samples, valid_ds, n_valid_samples = split_dataset(ds.dataset)
-        train_ds = train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().batch(FLAGS.batch_size)
-        valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size)
+        train_ds = ds.train_ds.repeat().batch(FLAGS.batch_size)
+        valid_ds = ds.valid_ds.repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'cnn1D':
 
         ds.dataset = ds.dataset.map(lambda x, y, is_test: (tf.reshape(x, [-1]), y, is_test))
@@ -401,9 +358,8 @@ def main(_):
         print(model.summary())
 
         # train, validation dataset split
-        train_ds, n_train_samples, valid_ds, n_valid_samples = split_dataset(ds.dataset)
-        train_ds = train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().batch(FLAGS.batch_size)
-        valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size)
+        train_ds = ds.train_ds.repeat().batch(FLAGS.batch_size)
+        valid_ds = ds.valid_ds.repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'cnn2D':
         ds.dataset = ds.dataset.map(lambda x, y, is_test: (tf.expand_dims(x, 2), y, is_test))
 
@@ -425,9 +381,8 @@ def main(_):
         print(model.summary())
 
         # train, validation dataset split
-        train_ds, n_train_samples, valid_ds, n_valid_samples = split_dataset(ds.dataset)
-        train_ds = train_ds.shuffle(11998, reshuffle_each_iteration=True).take(11998).repeat().batch(FLAGS.batch_size)
-        valid_ds = valid_ds.shuffle(1698, reshuffle_each_iteration=True).take(1698).repeat().batch(FLAGS.batch_size)
+        train_ds = ds.train_ds.repeat().batch(FLAGS.batch_size)
+        valid_ds = ds.valid_ds.repeat().batch(FLAGS.batch_size)
     else:
         raise ValueError("Unknown model", FLAGS.model)
 
@@ -474,10 +429,10 @@ def main(_):
     history = model.fit(
         train_ds,
         epochs=FLAGS.epochs, verbose=1,
-        steps_per_epoch=(11998 // FLAGS.batch_size) + 1,
+        steps_per_epoch=((47017 * len(ds.lang_labels)) // FLAGS.batch_size) + 1,
         validation_data=valid_ds,
         validation_freq=FLAGS.print_every,
-        validation_steps=(1698 // FLAGS.batch_size) + 1,
+        validation_steps=((8951 * len(ds.lang_labels)) // FLAGS.batch_size) + 1,
         callbacks=[conf_matrix_callback],
     )
 
@@ -500,7 +455,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--noise_std',
         type=float,
-        default=0.0,
+        default=0.8,
         help="""\
       Std of the noise to be added during training
       """)
@@ -508,7 +463,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--epochs',
         type=int,
-        default=100,
+        default=250,
         help='How many epoch of training to perform', )
     parser.add_argument(
         '--batch_size',
