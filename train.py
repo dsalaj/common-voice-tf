@@ -180,6 +180,7 @@ class OfflineCommonVoiceDataset:
         self.lang_labels = lang_labels
         self.n_samples = n_samples
 
+
 def split_dataset(dataset):
     def filter_test(feature, label, is_test):
         return is_test
@@ -206,6 +207,18 @@ def split_dataset(dataset):
     return train_ds, 139969, valid_ds, 25867
 
 
+def count_samples(dataset, dataset_type):
+    print('Dataset: ', dataset)
+    print('Dataset type: ', dataset_type)
+    count = {i: 0 for i in range(len(dataset.lang_labels))}
+    for features, labels, is_test in dataset_type.dataset.batch(1):
+        # print("features", features.shape, "labels", labels.numpy()[0], "test", is_test)
+        # print("min", np.min(features), "max", np.max(features))
+        # for i in range(features.shape[1]):
+        #    print(i, "min", np.min(features[:, i]), "max", np.max(features[:, i]))
+        count[labels.numpy()[0]] += 1
+    print('Samples: ', count)
+
 def main(_):
     # Set the verbosity based on flags (default is INFO, so we see all messages)
     tf.compat.v1.logging.set_verbosity(FLAGS.verbosity)
@@ -215,15 +228,9 @@ def main(_):
 
     if DEBUG_DATASET:
         # PREVIEW DATA SHAPES
-        print(ds.dataset)
-        count = {i: 0 for i in range(len(ds.lang_labels))}
-        for features, labels, is_test in ds.dataset.batch(1):
-            #print("features", features.shape, "labels", labels.numpy()[0], "test", is_test)
-            #print("min", np.min(features), "max", np.max(features))
-            #for i in range(features.shape[1]):
-            #    print(i, "min", np.min(features[:, i]), "max", np.max(features[:, i]))
-            count[labels.numpy()[0]] += 1
-        print(count)
+        # whole training dataset and validation dataset
+        count_samples(ds, ds.train_ds)
+        count_samples(ds, ds.valid_ds)
         exit()
 
     if FLAGS.model == 'lstm':
@@ -259,8 +266,6 @@ def main(_):
         # call padded_batch on the dataset to created batched samples padded by zeros
         # padded_shapes represent the dimension of the features [None, ds.mfcc_channels] (variable dimension, ds.mfcc_channels),
         # and [] (scalar dimension) for labels
-        # train, validation dataset split
-        train_ds, n_train_samples, valid_ds, n_valid_samples = split_dataset(ds.dataset)
         if TYPE == DatasetProcessingType.PADDING_MASKING:
             train_ds = ds.train_ds.repeat().padded_batch(batch_size=FLAGS.batch_size, padded_shapes=([None, ds.mfcc_channels], []))
             valid_ds = ds.valid_ds.repeat().padded_batch(batch_size=FLAGS.batch_size,
@@ -301,8 +306,6 @@ def main(_):
         # call padded_batch on the dataset to created batched samples padded by zeros
         # padded_shapes represent the dimension of the features [None, ds.mfcc_channels] (variable dimension, ds.mfcc_channels),
         # and [] (scalar dimension) for labels
-        # train, validation dataset split
-        train_ds, n_train_samples, valid_ds, n_valid_samples = split_dataset(ds.dataset)
         if TYPE == DatasetProcessingType.PADDING_MASKING:
             train_ds = ds.train_ds.repeat().padded_batch(batch_size=FLAGS.batch_size,
                                                       padded_shapes=([None, ds.mfcc_channels], []))
@@ -332,7 +335,6 @@ def main(_):
         model = Model(inputs=inp, outputs=outp)
         print(model.summary())
 
-        # train, validation dataset split
         train_ds = ds.train_ds.repeat().batch(FLAGS.batch_size)
         valid_ds = ds.valid_ds.repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'cnn1D':
@@ -357,7 +359,6 @@ def main(_):
 
         print(model.summary())
 
-        # train, validation dataset split
         train_ds = ds.train_ds.repeat().batch(FLAGS.batch_size)
         valid_ds = ds.valid_ds.repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'cnn2D':
@@ -380,7 +381,6 @@ def main(_):
 
         print(model.summary())
 
-        # train, validation dataset split
         train_ds = ds.train_ds.repeat().batch(FLAGS.batch_size)
         valid_ds = ds.valid_ds.repeat().batch(FLAGS.batch_size)
     else:
