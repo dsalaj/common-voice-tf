@@ -316,7 +316,9 @@ def main(_):
             valid_ds = ds.valid_ds.repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'cnn2D_inc':
         #TODO: try cnns created for text classification
-        ds.dataset = ds.dataset.map(lambda x, y, is_test: (tf.expand_dims(x, 2), y, is_test))
+        ds.train_ds = ds.train_ds.map(lambda x, y: (tf.expand_dims(x, 2), y))
+        ds.valid_ds = ds.valid_ds.map(lambda x, y: (tf.expand_dims(x, 2), y))
+
         inp = Input(shape=(ds.timestamps, ds.mfcc_channels, 1))
         filter_sizes = [2, 3, 4, 5]
         num_filters = 36
@@ -339,8 +341,11 @@ def main(_):
         valid_ds = ds.valid_ds.repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'cnn1D':
 
-        ds.dataset = ds.dataset.map(lambda x, y, is_test: (tf.reshape(x, [-1]), y, is_test))
-        ds.dataset = ds.dataset.map(lambda x, y, is_test: (tf.expand_dims(x, 1), y, is_test))
+        ds.train_ds = ds.train_ds.map(lambda x, y: (tf.reshape(x, [-1]), y))
+        ds.train_ds = ds.train_ds.map(lambda x, y: (tf.expand_dims(x, 1), y))
+
+        ds.valid_ds = ds.valid_ds.map(lambda x, y: (tf.reshape(x, [-1]), y))
+        ds.valid_ds = ds.valid_ds.map(lambda x, y: (tf.expand_dims(x, 1), y))
 
         model = Sequential([
             Conv1D(16, input_shape=(ds.mfcc_channels*ds.timestamps, 1), kernel_size=3, activation='tanh'),
@@ -353,7 +358,7 @@ def main(_):
             MaxPooling1D(pool_size=3),
             Flatten(),
             Dense(256, activation='tanh'),
-            Dense(125, activation='tanh'),
+            Dense(128, activation='tanh'),
             Dense(len(ds.lang_labels), activation='softmax')
         ])
 
@@ -362,7 +367,8 @@ def main(_):
         train_ds = ds.train_ds.repeat().batch(FLAGS.batch_size)
         valid_ds = ds.valid_ds.repeat().batch(FLAGS.batch_size)
     elif FLAGS.model == 'cnn2D':
-        ds.dataset = ds.dataset.map(lambda x, y, is_test: (tf.expand_dims(x, 2), y, is_test))
+        ds.train_ds = ds.train_ds.map(lambda x, y: (tf.expand_dims(x, 2), y))
+        ds.valid_ds = ds.valid_ds.map(lambda x, y: (tf.expand_dims(x, 2), y))
 
         model = Sequential([
             Conv2D(16, (3, 3), input_shape=(ds.timestamps, ds.mfcc_channels, 1), activation='tanh', padding='same'),
@@ -375,7 +381,7 @@ def main(_):
             AveragePooling2D(),
             Flatten(),
             Dense(256, activation='tanh'),
-            Dense(125, activation='tanh'),
+            Dense(128, activation='tanh'),
             Dense(len(ds.lang_labels), activation='softmax')
         ])
 
@@ -408,7 +414,9 @@ def main(_):
     #reduce_learning_rate = ReduceLROnPlateau(monitor='loss', factor=0.9,
     #                          patience=3, min_lr=1e-3)
 
-    conf_matrix_callback = ConfusionMatrixCallback(train_dataset=train_ds, validation_data=valid_ds, validation_data_size=1698, train_data_size=11998, batch_size=FLAGS.batch_size, classes=ds.lang_labels)
+    conf_matrix_callback = ConfusionMatrixCallback(train_dataset=train_ds, validation_data=valid_ds,
+                                                   validation_data_size=8951, train_data_size=47017,
+                                                   batch_size=FLAGS.batch_size, classes=ds.lang_labels, model_type = FLAGS.model)
     #TODO: try autokeras
     #model.fit(train_ds.batch(FLAGS.batch_size) ,epochs=FLAGS.epochs, verbose=2,
     #          steps_per_epoch=int(ds.n_samples * 0.75) // FLAGS.batch_size,
@@ -441,7 +449,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--model',
         type=str,
-        default='lstm',
+        default='cnn2D',
         help="""\
       Model to train: lstm, bilstm, cnn1D, cnn2D, cnn2D_inc, 
       """)
@@ -455,7 +463,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--noise_std',
         type=float,
-        default=0.8,
+        default=0.5,
         help="""\
       Std of the noise to be added during training
       """)
