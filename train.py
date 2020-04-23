@@ -26,7 +26,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 
 def ds_len(dataset):
-    return dataset.map(lambda x, y: 1).reduce(tf.constant(0), lambda x, _: x+1)
+    return tf.cast(dataset.map(lambda x, y: 1).reduce(tf.constant(0), lambda x, _: x+1), dtype=tf.int64).numpy()
 
 
 def ds_oversample_to_size(dataset, size):
@@ -37,11 +37,15 @@ def ds_oversample_to_size(dataset, size):
 
 class OfflineCommonVoiceDataset:
     def __init__(self):
-        lang_labels = ['it', 'nl', 'pt', 'ru', 'zh-CN']
+        # lang_labels = ['ru', 'zh-CN']
+        # lang_labels = ['it', 'nl', 'pt', 'ru', 'zh-CN']
+        lang_labels = ['en', 'de', 'fr', 'it']
         self.mfcc_channels = 20
-        n_samples = len(lang_labels) * 10000
         list_ds = []
+        n_ds = []
         valid_list_ds = []
+        n_valid_ds = []
+
         for label in lang_labels:
             file_path = os.path.join(FLAGS.data_dir, label, label + '.tfrecord')
             ds_file = tf.data.TFRecordDataset(filenames=[file_path])
@@ -75,35 +79,27 @@ class OfflineCommonVoiceDataset:
             ds_file = ds_file.map(parse_tfrecord)
             ds_file = ds_file.filter(filter_short)
             ds_file = ds_file.map(repeat_short)
-            n_train = 0
-            n_test = 0
-            # for _, _, is_test in ds_file.batch(1):
-            #     if is_test.numpy():
-            #         n_test += 1
-            #     else:
-            #         n_train += 1
-            # print(label, "train", n_train, "test", n_test)
-            # > it    train 47017 test 8951
-            # > nl    train 21247 test 1698
-            # > pt    train 18067 test 4022
-            # > ru    train 41640 test 6299
-            # > zh-CN train 11998 test 4897
-            #list_ds.append(ds_file)
-            train_ds, _, valid_ds, _ = split_dataset(ds_file)
-            train_ds = ds_oversample_to_size(train_ds, 47017)
-            valid_ds = valid_ds.take(1698)  # undersampling to smallest language
 
-            train_ds_len = ds_len(train_ds)
-            valid_ds_len = ds_len(valid_ds)
-            print(label, train_ds_len, valid_ds_len)
+            train_ds, valid_ds = split_dataset(ds_file)
+            n_ds.append(ds_len(train_ds))
+            n_valid_ds.append(ds_len(valid_ds))
+
+            print(label, "\ttrain_ds_len", n_ds[-1], "\tvalid_ds_len", n_valid_ds[-1])
             list_ds.append(train_ds)
             valid_list_ds.append(valid_ds)
+
+        for i in range(len(list_ds)):
+            self.n_train_samples = np.max(n_ds)  # longest training set of all languages
+            self.n_val_samples = np.min(n_valid_ds)  # shortest validation set of all languages
+            print(lang_labels[i], "\toversampling training sets to", self.n_train_samples, "\tsamples")
+            list_ds[i] = ds_oversample_to_size(list_ds[i], self.n_train_samples)  # oversample training sets to match
+            print(lang_labels[i], "\tundersampling validation sets to", self.n_val_samples, "\tsamples")
+            valid_list_ds[i] = valid_list_ds[i].take(self.n_val_samples)  # undersample validation sets to match
 
         # self.dataset = tf.data.experimental.sample_from_datasets(list_ds)
         self.train_ds = tf.data.experimental.sample_from_datasets(list_ds)
         self.valid_ds = tf.data.experimental.sample_from_datasets(valid_list_ds)
         self.lang_labels = lang_labels
-        self.n_samples = n_samples
 
 
 def split_dataset(dataset):
@@ -119,17 +115,7 @@ def split_dataset(dataset):
     valid_ds = dataset.filter(filter_test)
     valid_ds = valid_ds.map(remove_test_flag)
 
-    # n_valid_samples = 0
-    # for _, labels in valid_ds.batch(1000):
-    #     n_valid_samples += labels.shape[0]
-    # print("Validation set size:", n_valid_samples)  # 25867
-
-    # n_train_samples = 0
-    # for _, labels in train_ds.batch(1000):
-    #     n_train_samples += labels.shape[0]
-    # print("Train set size:", n_train_samples)  # 139969
-
-    return train_ds, 139969, valid_ds, 25867
+    return train_ds, valid_ds
 
 
 def main(_):
@@ -196,8 +182,6 @@ def main(_):
         metrics=['sparse_categorical_accuracy', ],
     )
 
-    # train_ds, n_train_samples, valid_ds, n_valid_samples = split_dataset(ds.dataset)
-
     # NOTE: Given that the tf.data.experimental.sample_from_datasets draws the samples without replacement,
     # we do not want to define the epoch or validation steps by the number of actual samples as this would
     # again lead to an unbalanced data for training/validation.
@@ -215,7 +199,7 @@ def main(_):
     # print("Num. samples per label in training set:", count)
     # exit()
 
-    eval_ds = ds.valid_ds.batch(1698 * len(ds.lang_labels))
+    eval_ds = ds.valid_ds.batch(ds.n_val_samples * len(ds.lang_labels))
 
     def log_confusion_matrix(epoch, logs):
         print("\nConfusion Matrix:")
@@ -231,10 +215,10 @@ def main(_):
     history = model.fit(
         ds.train_ds.repeat().batch(FLAGS.batch_size),
         epochs=FLAGS.epochs, verbose=1,
-        steps_per_epoch=((47017 * len(ds.lang_labels)) // FLAGS.batch_size) + 1,
+        steps_per_epoch=((ds.n_train_samples * len(ds.lang_labels)) // FLAGS.batch_size) + 1,
         validation_data=ds.valid_ds.repeat().batch(FLAGS.batch_size),
         validation_freq=FLAGS.print_every,
-        validation_steps=((1698 * len(ds.lang_labels)) // FLAGS.batch_size) + 1,
+        validation_steps=((ds.n_val_samples * len(ds.lang_labels)) // FLAGS.batch_size) + 1,
         callbacks=[cm_callback],
     )
 
