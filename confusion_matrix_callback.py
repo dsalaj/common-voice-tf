@@ -8,7 +8,7 @@ import itertools
 
 class ConfusionMatrixCallback(tf.keras.callbacks.Callback):
 
-    def __init__(self, train_dataset, validation_data, validation_data_size, train_data_size, batch_size, classes, normalize=False):
+    def __init__(self, train_dataset, validation_data, validation_data_size, train_data_size, batch_size, classes, model_type, normalize=False):
         self.classes = classes
         self.batch_size = batch_size
         self.train_dataset = train_dataset
@@ -17,6 +17,7 @@ class ConfusionMatrixCallback(tf.keras.callbacks.Callback):
         self.validation_data = validation_data
         self.validation_data_size = validation_data_size
         self.train_data_size = train_data_size
+        self.model_type = model_type
 
         suffix = time.strftime('%Y-%m-%d--%H-%M-%S')
         self.writer = tf.summary.create_file_writer(logdir='tensorboard/{}'.format(suffix) + '/cnf_matrices/')
@@ -29,13 +30,25 @@ class ConfusionMatrixCallback(tf.keras.callbacks.Callback):
     def calculate_validation_matrix(self, epoch):
         plt.figure()
         plt.title('Confusion matrix')
+        # TODO: handle different models
         for features, labels in self.validation_data.batch((self.validation_data_size // self.batch_size) + 1):
 
-            features_shape = features.shape  # should be 4-dimensional
-            features = tf.reshape(features,
+            if self.model_type == 'lstm' or self.model_type == 'bilstm':
+                features_shape = features.shape  # should be 4-dimensional
+                features = tf.reshape(features,
                                   shape=(features_shape[0] * features_shape[1], features_shape[2], features_shape[3]))
-            labels_shape = labels.shape  # should be 2-dimensional
-            labels = tf.reshape(labels, shape=(labels_shape[0] * labels_shape[1],))
+                labels_shape = labels.shape  # should be 2-dimensional
+                labels = tf.reshape(labels, shape=(labels_shape[0] * labels_shape[1],))
+            elif self.model_type == 'cnn2D':
+                features_shape = features.shape  # should be 4-dimensional
+                features = tf.reshape(features,
+                                      shape=(
+                                      features_shape[0] * features_shape[1], features_shape[2], features_shape[3], features_shape[4]))
+                labels_shape = labels.shape  # should be 2-dimensional
+                labels = tf.reshape(labels, shape=(labels_shape[0] * labels_shape[1],))
+                print(features)
+
+
 
             pred = self.model.predict(features)
             max_pred = np.argmax(pred, axis=1)
@@ -77,11 +90,22 @@ class ConfusionMatrixCallback(tf.keras.callbacks.Callback):
         plt.title('Confusion matrix')
         for features, labels in self.train_dataset.batch((self.train_data_size // self.batch_size) + 1):
 
-                features_shape = features.shape  # should be 4-dimensional
-                features = tf.reshape(features,
-                                  shape=(features_shape[0] * features_shape[1], features_shape[2], features_shape[3]))
-                labels_shape = labels.shape  # should be 2-dimensional
-                labels = tf.reshape(labels, shape=(labels_shape[0] * labels_shape[1],))
+                if self.model_type == 'lstm' or self.model_type == 'bilstm':
+                    features_shape = features.shape  # should be 4-dimensional
+                    features = tf.reshape(features,
+                                      shape=(
+                                      features_shape[0] * features_shape[1], features_shape[2], features_shape[3]))
+                    labels_shape = labels.shape  # should be 2-dimensional
+                    labels = tf.reshape(labels, shape=(labels_shape[0] * labels_shape[1],))
+                elif self.model_type == 'cnn2D':
+                    features_shape = features.shape  # should be 4-dimensional
+                    features = tf.reshape(features,
+                                      shape=(
+                                          features_shape[0] * features_shape[1], features_shape[2], features_shape[3],
+                                          features_shape[4]))
+                    labels_shape = labels.shape  # should be 2-dimensional
+                    labels = tf.reshape(labels, shape=(labels_shape[0] * labels_shape[1],))
+                    print(features)
 
                 pred = self.model.predict(features)
                 max_pred = np.argmax(pred, axis=1)
