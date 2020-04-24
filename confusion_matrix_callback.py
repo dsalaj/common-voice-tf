@@ -46,8 +46,6 @@ class ConfusionMatrixCallback(tf.keras.callbacks.Callback):
                                       features_shape[0] * features_shape[1], features_shape[2], features_shape[3], features_shape[4]))
                 labels_shape = labels.shape  # should be 2-dimensional
                 labels = tf.reshape(labels, shape=(labels_shape[0] * labels_shape[1],))
-                print(features)
-
 
 
             pred = self.model.predict(features)
@@ -105,7 +103,6 @@ class ConfusionMatrixCallback(tf.keras.callbacks.Callback):
                                           features_shape[4]))
                     labels_shape = labels.shape  # should be 2-dimensional
                     labels = tf.reshape(labels, shape=(labels_shape[0] * labels_shape[1],))
-                    print(features)
 
                 pred = self.model.predict(features)
                 max_pred = np.argmax(pred, axis=1)
