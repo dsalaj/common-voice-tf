@@ -44,7 +44,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 TYPE = DatasetProcessingType.NORMAL
 
 def ds_len(dataset):
-    return dataset.map(lambda x, y: 1).reduce(tf.constant(0), lambda x, _: x+1)
+    return tf.cast(dataset.map(lambda x, y: 1).reduce(tf.constant(0), lambda x, _: x+1), tf.int64).numpy()
 
 def ds_oversample_to_size(dataset, size):
     while ds_len(dataset) < tf.constant(size):
@@ -59,6 +59,9 @@ class OfflineCommonVoiceDataset:
         n_samples = len(lang_labels) * 10000
         list_ds = []
         valid_list_ds = []
+        n_ds = []
+        n_valid_ds = []
+
         for label in lang_labels:
             file_path = os.path.join(FLAGS.data_dir, label, label + '.tfrecord')
             ds_file = tf.data.TFRecordDataset(filenames=[file_path])
@@ -150,35 +153,26 @@ class OfflineCommonVoiceDataset:
                         return PaddingMaskingProcessing(mfcc_channels, timestamps).process(ds_file)
 
             ds_file = ProcessingFactory.get_processor(self.mfcc_channels, self.timestamps,  ds_file, TYPE)
-            #n_train = 0
-            #n_test = 0
-            #for _, _, is_test in ds_file.batch(1):
-            #     if is_test.numpy():
-            #         n_test += 1
-            #     else:
-            #         n_train += 1
-            #print(label, "train", n_train, "test", n_test)
-            # > it train 47014 test 8951
-            # > nl train 21247 test 1698
-            # > pt train 18068 test 4023
-            # > ru train 41639 test 6299
-            # > zh-CN train 11998 test 4896
-            train_ds, _, valid_ds, _ = split_dataset(ds_file)
-            train_ds = ds_oversample_to_size(train_ds, 47017)
-            valid_ds = ds_oversample_to_size(valid_ds, 8951)
-            #valid_ds = valid_ds.take(1698)  # undersampling to smallest language
-
-            train_ds_len = ds_len(train_ds)
-            valid_ds_len = ds_len(valid_ds)
-            print(label, train_ds_len, valid_ds_len)
+            train_ds, valid_ds = split_dataset(ds_file)
+            n_ds.append(ds_len(train_ds))
+            n_valid_ds.append(ds_len(valid_ds))
+            print(label, "\ttrain_ds_len", n_ds[-1], "\tvalid_ds_len", n_valid_ds[-1])
             list_ds.append(train_ds)
             valid_list_ds.append(valid_ds)
 
-        #self.dataset = tf.data.experimental.sample_from_datasets(list_ds)
+        for i in range(len(list_ds)):
+            self.n_train_samples = np.max(n_ds)  # longest training set of all languages
+            self.n_val_samples = np.min(n_valid_ds)  # shortest validation set of all languages
+            print(lang_labels[i], "\toversampling training sets to", self.n_train_samples, "\tsamples")
+            list_ds[i] = ds_oversample_to_size(list_ds[i],
+                                                   self.n_train_samples)  # oversample training sets to match
+            print(lang_labels[i], "\tundersampling validation sets to", self.n_val_samples, "\tsamples")
+            valid_list_ds[i] = valid_list_ds[i].take(self.n_val_samples)  # undersample validation sets to match
+
+
         self.train_ds = tf.data.experimental.sample_from_datasets(list_ds)
         self.valid_ds = tf.data.experimental.sample_from_datasets(valid_list_ds)
         self.lang_labels = lang_labels
-        self.n_samples = n_samples
 
 
 def split_dataset(dataset):
@@ -194,17 +188,7 @@ def split_dataset(dataset):
     valid_ds = dataset.filter(filter_test)
     valid_ds = valid_ds.map(remove_test_flag)
 
-    #n_valid_samples = 0
-    #for _, labels in valid_ds.batch(1000):
-    #     n_valid_samples += labels.shape[0]
-    #print("Validation set size:", n_valid_samples)  #
-
-    #n_train_samples = 0
-    #for _, labels in train_ds.batch(1000):
-    #     n_train_samples += labels.shape[0]
-    #print("Train set size:", n_train_samples)  # 139969
-
-    return train_ds, 139969, valid_ds, 25867
+    return train_ds, valid_ds
 
 
 def count_samples(dataset, dataset_type):
@@ -415,7 +399,7 @@ def main(_):
     #                          patience=3, min_lr=1e-3)
 
     conf_matrix_callback = ConfusionMatrixCallback(train_dataset=train_ds, validation_data=valid_ds,
-                                                   validation_data_size=8951, train_data_size=47017,
+                                                   validation_data_size=ds.n_val_samples, train_data_size=ds.n_train_samples,
                                                    batch_size=FLAGS.batch_size, classes=ds.lang_labels, model_type = FLAGS.model)
     #TODO: try autokeras
     #model.fit(train_ds.batch(FLAGS.batch_size) ,epochs=FLAGS.epochs, verbose=2,
@@ -437,10 +421,10 @@ def main(_):
     history = model.fit(
         train_ds,
         epochs=FLAGS.epochs, verbose=1,
-        steps_per_epoch=((47017 * len(ds.lang_labels)) // FLAGS.batch_size) + 1,
+        steps_per_epoch=((ds.n_train_samples * len(ds.lang_labels)) // FLAGS.batch_size) + 1,
         validation_data=valid_ds,
         validation_freq=FLAGS.print_every,
-        validation_steps=((8951 * len(ds.lang_labels)) // FLAGS.batch_size) + 1,
+        validation_steps=((ds.n_val_samples * len(ds.lang_labels)) // FLAGS.batch_size) + 1,
         callbacks=[conf_matrix_callback],
     )
 
